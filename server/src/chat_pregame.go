@@ -63,7 +63,8 @@ func chatStartIn(ctx context.Context, s *Session, d *CommandData, t *Table, cmd 
 	}
 
 	var minutesToWait float64
-	if v, err := strconv.ParseFloat(d.Args[0], 64); err != nil {
+	// the `"0" +` adds a leading zero in case the user inputs something like ".5" to represent half a minute
+	if v, err := strconv.ParseFloat("0" + d.Args[0], 64); err != nil {
 		msg := "\"" + d.Args[0] + "\" is not a valid number."
 		chatServerSend(ctx, msg, d.Room, d.NoTablesLock)
 		return
