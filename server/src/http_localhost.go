@@ -32,6 +32,8 @@ func httpLocalhostInit() {
 	// Create a new Gin HTTP router
 	httpRouter := gin.Default() // Has the "Logger" and "Recovery" middleware attached
 
+	registerResearchRoutes(httpRouter)
+
 	// Path handlers
 	httpRouter.POST("/ban", httpLocalhostUserAction)
 	httpRouter.POST("/mute", httpLocalhostUserAction)

@@ -53,6 +53,12 @@ type ExtraOptions struct {
 	// mutexes. When non-empty, tableStart uses this seed directly instead of calling
 	// getNextAvailableSeed (which queries the database).
 	PrecomputedSeed string
+
+	// Research-mode games receive a concrete JAXMARL-resolved layout from the localhost control
+	// API. The public Game Seed is recorded for inspection, but the server must not reshuffle from it.
+	ResearchGameSeed             string
+	ResearchSeatOrder            []int
+	ResearchRosterPlayerToSeatID map[string]string
 }
 
 // To minimize JSON output, we need to use pointers to each option instead of the normal type

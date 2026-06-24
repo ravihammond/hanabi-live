@@ -124,7 +124,13 @@ func tableStart(ctx context.Context, s *Session, d *CommandData, t *Table) {
 	seedPrefix := "p" + strconv.Itoa(len(t.Players)) +
 		"v" + strconv.Itoa(variant.ID) +
 		"s" // e.g. "p2v0s" for a 2-player no variant game
-	if t.ExtraOptions.JSONReplay {
+	if t.ExtraOptions.ResearchGameSeed != "" {
+		// Research-mode games are initialized from a validated JAXMARL layout. The public Game Seed
+		// remains visible for inspection, but the injected deck and Seat Order are already resolved.
+		g.Seed = t.ExtraOptions.ResearchGameSeed
+		shuffleDeck = false
+		shufflePlayers = false
+	} else if t.ExtraOptions.JSONReplay {
 		// This is a replay from arbitrary JSON data (or a custom game from arbitrary JSON data)
 		shufflePlayers = false
 		if t.ExtraOptions.CustomSeed == "" {
