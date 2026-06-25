@@ -121,6 +121,58 @@ func TestResearchControlAPIRequiresAdminToken(t *testing.T) {
 	}
 }
 
+func TestResearchControlAPIAcceptsZeroGameSeed(t *testing.T) {
+	researchTestInit(t)
+	router := researchTestRouter()
+	payload := researchSingleGamePayload()
+	payload.Game.Seed = 0
+	payload.Game.GameIndex = 0
+	payload.Game.GameSeed = researchIntPtr(0)
+
+	response := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/single-game",
+		payload,
+		"secret",
+	)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	}
+	var created CreatedResearchSingleGame
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to parse creation response: %v", err)
+	}
+	if created.GameSeed != 0 || created.GameID != "single_game_0" {
+		t.Fatalf("expected zero Game Seed session, got %#v", created)
+	}
+}
+
+func TestResearchControlAPIRejectsMissingGameSeedMetadata(t *testing.T) {
+	researchTestInit(t)
+	router := researchTestRouter()
+	payload := researchSingleGamePayload()
+	payload.Game.GameSeed = nil
+
+	response := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/single-game",
+		payload,
+		"secret",
+	)
+
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", response.Code, response.Body.String())
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte("game.game_seed metadata")) {
+		t.Fatalf("missing game_seed validation message: %s", response.Body.String())
+	}
+}
+
 func TestResearchControlAPICreatesWaitingTableWithMagicJoinLink(t *testing.T) {
 	researchTestInit(t)
 	router := researchTestRouter()
@@ -374,7 +426,7 @@ func researchSingleGamePayload() ResearchCreatePayload {
 		Game: ResearchGamePayload{
 			Seed:            100,
 			GameIndex:       2,
-			GameSeed:        102,
+			GameSeed:        researchIntPtr(102),
 			IdentityDisplay: "anonymous",
 			ChatEnabled:     false,
 		},
@@ -402,6 +454,10 @@ func researchSingleGamePayload() ResearchCreatePayload {
 			},
 		},
 	}
+}
+
+func researchIntPtr(value int) *int {
+	return &value
 }
 
 func researchValidDeck() []ResearchCardIdentity {

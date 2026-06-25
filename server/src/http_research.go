@@ -43,7 +43,7 @@ type ResearchSeededInitialLayout struct {
 type ResearchGamePayload struct {
 	Seed            int    `json:"seed"`
 	GameIndex       int    `json:"game_index"`
-	GameSeed        int    `json:"game_seed"`
+	GameSeed        *int   `json:"game_seed"`
 	IdentityDisplay string `json:"identity_display"`
 	ChatEnabled     bool   `json:"chat_enabled"`
 }
@@ -177,7 +177,8 @@ func researchCreateSingleGame(c *gin.Context) {
 		return
 	}
 
-	gameID := fmt.Sprintf("single_game_%d", payload.Game.GameSeed)
+	gameSeed := researchGameSeed(payload.Game)
+	gameID := fmt.Sprintf("single_game_%d", gameSeed)
 	rosterPlayerIDsBySeat := researchRosterPlayerIDsBySeat(payload.RosterPlayers, layout.seatOrder)
 	botRosterPlayerIDs := researchBotRosterPlayerIDs(payload.RosterPlayers)
 	joinLinks := researchRegisterJoinLinks(gameID, table.ID, payload, layout)
@@ -185,7 +186,7 @@ func researchCreateSingleGame(c *gin.Context) {
 		TableID:      table.ID,
 		GameID:       gameID,
 		Mode:         "single_game",
-		GameSeed:     payload.Game.GameSeed,
+		GameSeed:     gameSeed,
 		LayoutSource: "payload",
 		SeatOrder:    append([]int(nil), layout.seatOrder...),
 		JoinLinks:    joinLinks,
@@ -307,7 +308,7 @@ func researchUpdateCurrentGameLayout(c *gin.Context) {
 	gameID := c.Param("gameID")
 	var payload struct {
 		GameIndex           int                         `json:"game_index"`
-		GameSeed            int                         `json:"game_seed"`
+		GameSeed            *int                        `json:"game_seed"`
 		SeededInitialLayout ResearchSeededInitialLayout `json:"seeded_initial_layout"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
@@ -330,7 +331,7 @@ func researchUpdateCurrentGameLayout(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"detail": "Pregame Table layout game_index must match current game index."})
 		return
 	}
-	if payload.GameSeed != session.Seed+session.CurrentGameIndex {
+	if payload.GameSeed == nil || *payload.GameSeed != session.Seed+session.CurrentGameIndex {
 		c.JSON(http.StatusConflict, gin.H{"detail": "Pregame Table layout game_seed must match seed + game_index."})
 		return
 	}
@@ -486,7 +487,7 @@ func validateResearchPayload(payload ResearchCreatePayload) (*validatedResearchL
 	if err := validateResearchRoster(payload.RosterPlayers); err != nil {
 		return nil, err
 	}
-	if payload.Game.GameSeed == 0 && payload.Mode == "single_game" {
+	if payload.Game.GameSeed == nil && payload.Mode == "single_game" {
 		return nil, fmt.Errorf("Payload must include game.game_seed metadata.")
 	}
 	return validateResearchLayout(payload.SeededInitialLayout, len(payload.RosterPlayers))
@@ -594,6 +595,7 @@ func validateResearchAssignmentMap(seatOrder []int, assignment map[string]string
 
 func createResearchSingleGameTable(payload ResearchCreatePayload, layout *validatedResearchLayout) (*Table, error) {
 	ctx := context.Background()
+	gameSeed := researchGameSeed(payload.Game)
 	playerByRosterIndex := make(map[int]ResearchRosterPlayer)
 	for _, player := range payload.RosterPlayers {
 		playerByRosterIndex[player.RosterIndex] = player
@@ -602,7 +604,7 @@ func createResearchSingleGameTable(payload ResearchCreatePayload, layout *valida
 	tables.Lock(ctx)
 	defer tables.Unlock(ctx)
 
-	tableName := fmt.Sprintf("research-%d-%d", payload.Game.GameSeed, time.Now().UnixNano())
+	tableName := fmt.Sprintf("research-%d-%d", gameSeed, time.Now().UnixNano())
 	table := NewTable(tableName, 0)
 	table.Visible = false
 	table.MaxPlayers = len(payload.RosterPlayers)
@@ -615,7 +617,7 @@ func createResearchSingleGameTable(payload ResearchCreatePayload, layout *valida
 		JSONReplay:                   false,
 		CustomNumPlayers:             len(payload.RosterPlayers),
 		CustomDeck:                   layout.deckOrder,
-		ResearchGameSeed:             strconv.Itoa(payload.Game.GameSeed),
+		ResearchGameSeed:             strconv.Itoa(gameSeed),
 		ResearchSeatOrder:            append([]int(nil), layout.seatOrder...),
 		ResearchRosterPlayerToSeatID: copyStringMap(layout.rosterPlayerToSeatID),
 	}
@@ -742,6 +744,13 @@ func researchBotRosterPlayerIDs(players []ResearchRosterPlayer) map[string]bool 
 		}
 	}
 	return botIDs
+}
+
+func researchGameSeed(game ResearchGamePayload) int {
+	if game.GameSeed == nil {
+		return 0
+	}
+	return *game.GameSeed
 }
 
 func researchCardKey(color int, rank int) string {
