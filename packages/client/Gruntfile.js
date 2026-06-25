@@ -53,36 +53,14 @@ module.exports = function Gruntfile(grunt) {
         dest: path.join(cssDir, "critical.min.css"),
       },
     },
-
-    // Generate critical CSS.
-    criticalcss: {
-      custom: {
-        options: {
-          url: grunt.option("url"), // Pass the URL when running the task.
-          width: 1200,
-          height: 900,
-          filename: path.join(gruntOutputDir, bundleFilename),
-          outputfile: path.join(cssDir, "critical.css"),
-          buffer: 800 * 1024,
-          ignoreConsole: false,
-        },
-      },
-    },
   });
 
   grunt.loadNpmTasks("grunt-contrib-concat");
   grunt.loadNpmTasks("grunt-contrib-cssmin");
-  grunt.loadNpmTasks("grunt-criticalcss");
 
   grunt.registerTask("default", ["concat", "cssmin:main"]);
 
-  // Generating critical CSS is slow and infrequent.
-  // Run manually when the CSS changes with "npx grunt critical --url=http://localhost"
-  // and commit the resulting file (critical.min.css).
-  grunt.registerTask("critical", [
-    "concat",
-    "cssmin:main",
-    "criticalcss",
-    "cssmin:critical",
-  ]);
+  grunt.registerTask("critical", () => {
+    grunt.fail.fatal("critical CSS generation is disabled in this fork.");
+  });
 };

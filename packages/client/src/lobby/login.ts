@@ -150,6 +150,10 @@ export function automaticLogin(): void {
     send(username, username, ""); // For test accounts, we use the username as the password.
     return;
   }
+  if (urlParams.has("researchMagicJoin")) {
+    websocketInit();
+    return;
+  }
 
   // If we have logged in previously and our cookie is still good, automatically login.
   console.log("Testing to see if we have a cached WebSocket cookie.");

@@ -13,7 +13,7 @@ export const settings = z
     desktopNotification: z.boolean().default(false),
     soundMove: z.enum(SoundMove).default(SoundMove.All),
     soundTimer: z.boolean().default(true),
-    keldonMode: z.boolean().default(false),
+    keldonMode: z.boolean().default(true),
     colorblindMode: z.boolean().default(false),
     realLifeMode: z.boolean().default(false),
     reverseHands: z.boolean().default(false),

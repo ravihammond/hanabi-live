@@ -43,6 +43,7 @@ var (
 	// This cannot be a pointer because we need to copy it
 	defaultSettings = Settings{ // nolint: exhaustivestruct
 		SoundTimer:                    true,
+		KeldonMode:                    true,
 		Volume:                        50,
 		CreateTableVariant:            DefaultVariantName,
 		CreateTableTimeBaseMinutes:    2,

@@ -54,7 +54,7 @@ CREATE TABLE user_settings (
     desktop_notification                 BOOLEAN   NOT NULL  DEFAULT FALSE,
     sound_move                           SMALLINT  NOT NULL  DEFAULT 0, /* See the "SoundMove" enum. */
     sound_timer                          BOOLEAN   NOT NULL  DEFAULT TRUE,
-    keldon_mode                          BOOLEAN   NOT NULL  DEFAULT FALSE,
+    keldon_mode                          BOOLEAN   NOT NULL  DEFAULT TRUE,
     colorblind_mode                      BOOLEAN   NOT NULL  DEFAULT FALSE,
     real_life_mode                       BOOLEAN   NOT NULL  DEFAULT FALSE,
     reverse_hands                        BOOLEAN   NOT NULL  DEFAULT FALSE,

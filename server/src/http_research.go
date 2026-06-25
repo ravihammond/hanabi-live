@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"sync"
@@ -447,15 +448,29 @@ func researchMagicJoin(c *gin.Context) {
 		return
 	}
 
-	path := fmt.Sprintf("/pre-game/%d", join.TableID)
+	joinQuery := url.QueryEscape(token)
+	path := fmt.Sprintf("/pre-game/%d?researchMagicJoin=%s", join.TableID, joinQuery)
 	if table, ok := tables.Get(join.TableID, true); ok {
 		table.Lock(context.Background())
 		if table.Running {
-			path = fmt.Sprintf("/game/%d", join.TableID)
+			path = fmt.Sprintf("/game/%d?researchMagicJoin=%s", join.TableID, joinQuery)
 		}
 		table.Unlock(context.Background())
 	}
 	c.Redirect(http.StatusFound, path)
+}
+
+func researchMagicJoinTokenCredentials(token string) (int, string, bool) {
+	if token == "" || token == "1" {
+		return 0, "", false
+	}
+	researchSessionsMutex.Lock()
+	defer researchSessionsMutex.Unlock()
+	join, ok := researchJoinTokens[token]
+	if !ok {
+		return 0, "", false
+	}
+	return join.UserID, join.Username, true
 }
 
 func researchSessionForRequest(c *gin.Context) (*ResearchSession, bool) {
@@ -635,7 +650,7 @@ func createResearchSingleGameTable(payload ResearchCreatePayload, layout *valida
 			Name:      username,
 			Session:   session,
 			Present:   present,
-			Stats:     &PregameStats{},
+			Stats:     &PregameStats{NumGames: 0, Variant: NewUserStatsRow()},
 			LastTyped: time.Time{},
 		})
 		tables.AddPlaying(userID, table.ID)
@@ -689,6 +704,10 @@ func researchPregameJoinLinks(players []ResearchRosterPlayer, tableID string) ma
 }
 
 func researchPublicBaseURL() string {
+	host := os.Getenv("DOMAIN")
+	if host == "" {
+		host = "127.0.0.1"
+	}
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "80"
@@ -699,7 +718,7 @@ func researchPublicBaseURL() string {
 			port = envPort
 		}
 	}
-	return "http://127.0.0.1:" + port
+	return "http://" + host + ":" + port
 }
 
 func researchNewJoinToken() string {
@@ -932,6 +951,13 @@ func researchEncodeAction(action ResearchBotAction) string {
 		panic(err)
 	}
 	return string(encoded)
+}
+
+func researchIsGuestUser(userID int) bool {
+	researchSessionsMutex.Lock()
+	defer researchSessionsMutex.Unlock()
+	_, ok := researchGuestUsers[userID]
+	return ok
 }
 
 func researchHandleGuestConnected(s *Session) {

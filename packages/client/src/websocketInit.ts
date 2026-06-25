@@ -25,10 +25,17 @@ export function websocketInit(): void {
   if (globalThis.location.port !== "") {
     websocketHost += `:${globalThis.location.port}`;
   }
-  const websocketURL = `${websocketProtocol}://${websocketHost}/ws`;
+  const urlParams = new URLSearchParams(globalThis.location.search);
+  const researchMagicJoin = urlParams.get("researchMagicJoin");
+  const websocketQuery =
+    researchMagicJoin !== null && researchMagicJoin !== "1"
+      ? `?researchMagicJoin=${encodeURIComponent(researchMagicJoin)}`
+      : "";
+  const websocketURL = `${websocketProtocol}://${websocketHost}/ws${websocketQuery}`;
 
-  // Connect to the WebSocket server. This will automatically use the cookie that we received
-  // earlier from the POST. If the second argument is true, debugging is turned on.
+  // Connect to the WebSocket server. Normal logins authenticate via cookie; research magic-join
+  // tabs authenticate via a tab-scoped token query. If the second argument is true, debugging is
+  // turned on.
   console.log("Connecting to websocket URL:", websocketURL);
   const conn = new Connection(websocketURL, true);
 

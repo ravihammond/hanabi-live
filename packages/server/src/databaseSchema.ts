@@ -33,7 +33,7 @@ export const userSettingsTable = pgTable("user_settings", {
   desktopNotification: boolean("desktop_notification").notNull().default(false),
   soundMove: smallint("sound_move").notNull().default(0),
   soundTimer: boolean("sound_timer").notNull().default(true),
-  keldonMode: boolean("keldon_mode").notNull().default(false),
+  keldonMode: boolean("keldon_mode").notNull().default(true),
   colorblindMode: boolean("colorblind_mode").notNull().default(false),
   realLifeMode: boolean("real_life_mode").notNull().default(false),
   reverseHands: boolean("reverse_hands").notNull().default(false),

@@ -7,8 +7,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path"
+	"strconv"
 	"testing"
 
+	gsessions "github.com/gin-contrib/sessions"
+	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 )
 
@@ -121,6 +124,28 @@ func TestResearchControlAPIRequiresAdminToken(t *testing.T) {
 	}
 }
 
+func TestResearchWebsocketConnectDataDefaultsToJSONArrays(t *testing.T) {
+	data := newWebsocketConnectData()
+	if !data.Settings.KeldonMode {
+		t.Fatal("expected websocket defaults to use Keldon mode")
+	}
+	payload, err := json.Marshal(struct {
+		Friends         []string `json:"friends"`
+		PlayingAtTables []uint64 `json:"playingAtTables"`
+	}{
+		Friends:         data.FriendsList,
+		PlayingAtTables: data.PlayingAtTables,
+	})
+	if err != nil {
+		t.Fatalf("marshal welcome defaults: %v", err)
+	}
+
+	expected := `{"friends":[],"playingAtTables":[]}`
+	if string(payload) != expected {
+		t.Fatalf("expected welcome defaults to marshal as %s, got %s", expected, string(payload))
+	}
+}
+
 func TestResearchControlAPIAcceptsZeroGameSeed(t *testing.T) {
 	researchTestInit(t)
 	router := researchTestRouter()
@@ -174,6 +199,8 @@ func TestResearchControlAPIRejectsMissingGameSeedMetadata(t *testing.T) {
 }
 
 func TestResearchControlAPICreatesWaitingTableWithMagicJoinLink(t *testing.T) {
+	t.Setenv("DOMAIN", "localhost")
+	t.Setenv("PORT", "1212")
 	researchTestInit(t)
 	router := researchTestRouter()
 	payload := researchSingleGamePayload()
@@ -207,6 +234,9 @@ func TestResearchControlAPICreatesWaitingTableWithMagicJoinLink(t *testing.T) {
 	if !bytes.Contains([]byte(created.JoinLinks["roster_player_0"]), []byte("/join/")) {
 		t.Fatalf("expected a Research Magic Join Link, got %#v", created.JoinLinks)
 	}
+	if !bytes.HasPrefix([]byte(created.JoinLinks["roster_player_0"]), []byte("http://localhost:1212/join/")) {
+		t.Fatalf("expected configured local hostname in join link, got %#v", created.JoinLinks)
+	}
 
 	tableList := tables.GetList(true)
 	if len(tableList) != 1 {
@@ -230,6 +260,11 @@ func TestResearchControlAPICreatesWaitingTableWithMagicJoinLink(t *testing.T) {
 			table.Players[0].Name,
 			table.Players[1].Name,
 		})
+	}
+	for _, player := range table.Players {
+		if player.Stats == nil || player.Stats.Variant == nil {
+			t.Fatalf("expected research player stats to include variant stats: %#v", player)
+		}
 	}
 }
 
@@ -259,6 +294,29 @@ func TestResearchMagicJoinGuestConnectionAutoStartsInjectedTable(t *testing.T) {
 	join, ok := researchJoinTokens[token]
 	if !ok {
 		t.Fatalf("magic join token was not registered: %s", token)
+	}
+
+	redirect := httptest.NewRecorder()
+	router.ServeHTTP(redirect, httptest.NewRequest(http.MethodGet, "/join/"+token, nil))
+	if redirect.Code != http.StatusFound {
+		t.Fatalf("expected magic join redirect, got %d: %s", redirect.Code, redirect.Body.String())
+	}
+	expectedLocation := "/pre-game/" + strconv.FormatUint(created.TableID, 10) + "?researchMagicJoin=" + token
+	if redirect.Header().Get("Location") != expectedLocation {
+		t.Fatalf("expected magic join redirect to %q, got %q", expectedLocation, redirect.Header().Get("Location"))
+	}
+	userID, username, ok := researchMagicJoinTokenCredentials(token)
+	if !ok {
+		t.Fatal("expected magic join token to resolve websocket credentials")
+	}
+	if userID != join.UserID || username != join.Username {
+		t.Fatalf(
+			"expected token credentials (%d,%q), got (%d,%q)",
+			join.UserID,
+			join.Username,
+			userID,
+			username,
+		)
 	}
 
 	session := NewFakeSession(join.UserID, join.Username)
@@ -393,7 +451,10 @@ func researchTestInit(t *testing.T) {
 
 func researchTestRouter() *gin.Engine {
 	router := gin.New()
+	store := cookie.NewStore([]byte("test-session-secret"))
+	router.Use(gsessions.Sessions(HTTPSessionName, store))
 	registerResearchRoutes(router)
+	registerResearchPublicRoutes(router)
 	return router
 }
 

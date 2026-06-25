@@ -58,39 +58,53 @@ func httpWS(c *gin.Context) {
 		return
 	}
 
-	// If they have a valid cookie, it should have the "userID" value that we set in "httpLogin()"
-	session := gsessions.Default(c)
 	var userID int
-	if v := session.Get("userID"); v == nil {
-		msg := "Unauthorized WebSocket handshake detected from \"" + ip + "\". " +
-			"This likely means that their cookie has expired."
-		httpWSDeny(c, msg)
-		return
-	} else {
-		userID = v.(int)
-	}
-
-	// Get the username for this user
 	var username string
-	researchUsername, researchGuest := researchGuestUsername(userID)
-	if researchGuest {
-		username = researchUsername
-	} else if v, err := models.Users.GetUsername(userID); errors.Is(err, pgx.ErrNoRows) {
-		// The user has a cookie for a user that does not exist in the database
-		// (e.g. an "orphaned" user)
-		// This can happen in situations where a test user was deleted, for example
-		// Delete their cookie and force them to re-login
-		msg := "User from \"" + ip + "\" " +
-			"tried to login with a cookie with an orphaned user ID of " + strconv.Itoa(userID) +
-			". Deleting their cookie."
-		httpWSDeny(c, msg)
-		return
-	} else if err != nil {
-		msg := "Failed to get the username for user " + strconv.Itoa(userID) + ": " + err.Error()
-		httpWSError(c, msg)
-		return
+	var researchGuest bool
+	if token := c.Query("researchMagicJoin"); token != "" {
+		if id, name, ok := researchMagicJoinTokenCredentials(token); !ok {
+			msg := "Unauthorized research magic-join WebSocket handshake detected from \"" + ip + "\"."
+			httpWSDeny(c, msg)
+			return
+		} else {
+			userID = id
+			username = name
+			researchGuest = true
+		}
 	} else {
-		username = v
+		// If they have a valid cookie, it should have the "userID" value that we set in "httpLogin()"
+		session := gsessions.Default(c)
+		if v := session.Get("userID"); v == nil {
+			msg := "Unauthorized WebSocket handshake detected from \"" + ip + "\". " +
+				"This likely means that their cookie has expired."
+			httpWSDeny(c, msg)
+			return
+		} else {
+			userID = v.(int)
+		}
+
+		// Get the username for this user
+		researchUsername, isResearchGuest := researchGuestUsername(userID)
+		researchGuest = isResearchGuest
+		if researchGuest {
+			username = researchUsername
+		} else if v, err := models.Users.GetUsername(userID); errors.Is(err, pgx.ErrNoRows) {
+			// The user has a cookie for a user that does not exist in the database
+			// (e.g. an "orphaned" user)
+			// This can happen in situations where a test user was deleted, for example
+			// Delete their cookie and force them to re-login
+			msg := "User from \"" + ip + "\" " +
+				"tried to login with a cookie with an orphaned user ID of " + strconv.Itoa(userID) +
+				". Deleting their cookie."
+			httpWSDeny(c, msg)
+			return
+		} else if err != nil {
+			msg := "Failed to get the username for user " + strconv.Itoa(userID) + ": " + err.Error()
+			httpWSError(c, msg)
+			return
+		} else {
+			username = v
+		}
 	}
 
 	// Validation was successful; update the database with "datetime_last_login" and "last_ip"

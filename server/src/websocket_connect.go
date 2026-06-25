@@ -32,6 +32,16 @@ type WebsocketConnectData struct {
 	DisconShadowingSeat   int
 }
 
+func newWebsocketConnectData() *WebsocketConnectData {
+	return &WebsocketConnectData{ // nolint: exhaustivestruct
+		Friends:         make(map[int]struct{}),
+		ReverseFriends:  make(map[int]struct{}),
+		Settings:        defaultSettings,
+		FriendsList:     make([]string, 0),
+		PlayingAtTables: make([]uint64, 0),
+	}
+}
+
 // websocketConnect is fired when a new Melody WebSocket session is established
 // This is the third step of logging in; users will only get here if authentication was successful
 func websocketConnect(ms *melody.Session) {
@@ -86,11 +96,19 @@ func websocketConnect(ms *melody.Session) {
 		websocketDisconnectRemoveFromGames(ctx, s2)
 	}
 
-	go websocketConnectMessages(ctx, s, data)
+	researchGuest := researchIsGuestUser(s.UserID)
+	if researchGuest {
+		websocketConnectWelcomeMessage(s, data)
+	} else {
+		go websocketConnectMessages(ctx, s, data)
+	}
 
 	// Add the session to a map so that we can keep track of all of the connected users
 	sessions.Set(s.UserID, s)
 	researchHandleGuestConnected(s)
+	if researchGuest {
+		go websocketConnectMessagesAfterWelcome(ctx, s, data)
+	}
 	logger.Info("User \"" + s.Username + "\" connected; " +
 		strconv.Itoa(sessions.Length()) + " user(s) now connected.")
 
@@ -103,6 +121,10 @@ func websocketConnect(ms *melody.Session) {
 func websocketConnectMessages(ctx context.Context, s *Session, data *WebsocketConnectData) {
 	// Now, send some additional information to them
 	websocketConnectWelcomeMessage(s, data)
+	websocketConnectMessagesAfterWelcome(ctx, s, data)
+}
+
+func websocketConnectMessagesAfterWelcome(ctx context.Context, s *Session, data *WebsocketConnectData) {
 	websocketConnectUserList(s)
 	websocketConnectTableList(ctx, s)
 	websocketConnectChat(s)
@@ -113,10 +135,7 @@ func websocketConnectMessages(ctx context.Context, s *Session, data *WebsocketCo
 }
 
 func websocketConnectGetData(ctx context.Context, ms *melody.Session, userID int, username string) *WebsocketConnectData {
-	data := &WebsocketConnectData{ // nolint: exhaustivestruct
-		Friends:        make(map[int]struct{}),
-		ReverseFriends: make(map[int]struct{}),
-	}
+	data := newWebsocketConnectData()
 
 	// -----------------------------------------
 	// Data that will be attached to the session

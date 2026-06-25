@@ -69,16 +69,12 @@ echo
 # Similar to the JavaScript, we need to concatenate all of the CSS into one file before sending it
 # to end-users
 if [[ ${1-} == "crit" ]]; then
-  echo "Packing the CSS and generating critical CSS using Grunt..."
-  echo
-  npx grunt critical --url="http://localhost:$PORT"
-  echo
-  echo "Remember to commit the \"critical.min.css\" file if it had any changes."
-  echo
+  echo "Critical CSS generation is disabled in this fork."
+  exit 1
 else
-  echo "Packing the CSS using Grunt..."
+  echo "Packing the CSS..."
   echo
-  npx grunt
+  node "$DIR/build_css.cjs"
   echo
 fi
 GRUNT_OUTPUT_DIR="$DIR/grunt_output"
