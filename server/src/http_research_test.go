@@ -121,7 +121,7 @@ func TestResearchControlAPIRequiresAdminToken(t *testing.T) {
 	}
 }
 
-func TestResearchControlAPICreatesRunningTableFromInjectedLayout(t *testing.T) {
+func TestResearchControlAPICreatesWaitingTableWithMagicJoinLink(t *testing.T) {
 	researchTestInit(t)
 	router := researchTestRouter()
 	payload := researchSingleGamePayload()
@@ -146,8 +146,14 @@ func TestResearchControlAPICreatesRunningTableFromInjectedLayout(t *testing.T) {
 	if created.GameSeed != 102 {
 		t.Fatalf("expected Game Seed 102, got %d", created.GameSeed)
 	}
+	if created.TableID == 0 {
+		t.Fatal("expected response to expose the created table ID")
+	}
 	if len(created.JoinLinks) != 1 {
 		t.Fatalf("expected one human join link, got %#v", created.JoinLinks)
+	}
+	if !bytes.Contains([]byte(created.JoinLinks["roster_player_0"]), []byte("/join/")) {
+		t.Fatalf("expected a Research Magic Join Link, got %#v", created.JoinLinks)
 	}
 
 	tableList := tables.GetList(true)
@@ -155,25 +161,78 @@ func TestResearchControlAPICreatesRunningTableFromInjectedLayout(t *testing.T) {
 		t.Fatalf("expected one created table, got %d", len(tableList))
 	}
 	table := tableList[0]
-	if !table.Running {
-		t.Fatal("research-created table should be running")
+	if table.Running {
+		t.Fatal("research-created table should wait for the human magic-join before starting")
 	}
-	if table.Players[0].Name != "roster_player_1" || table.Players[1].Name != "roster_player_0" {
+	if table.Visible {
+		t.Fatal("research-created table should not be visible in the public lobby")
+	}
+	if table.Players[0].Present != true || table.Players[1].Present != false {
+		t.Fatalf("expected bot seat present and human seat pending, got %#v", []bool{
+			table.Players[0].Present,
+			table.Players[1].Present,
+		})
+	}
+	if table.Players[0].Name != "Player 1" || table.Players[1].Name != "Player 2" {
 		t.Fatalf("players were not assigned from Seat Order: %#v", []string{
 			table.Players[0].Name,
 			table.Players[1].Name,
 		})
 	}
+}
 
-	game := table.Game
-	if game.Seed != "102" {
-		t.Fatalf("expected public Game Seed to be recorded, got %q", game.Seed)
+func TestResearchMagicJoinGuestConnectionAutoStartsInjectedTable(t *testing.T) {
+	researchTestInit(t)
+	router := researchTestRouter()
+	payload := researchSingleGamePayload()
+
+	response := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/single-game",
+		payload,
+		"secret",
+	)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
 	}
-	if len(game.Deck) != 50 {
-		t.Fatalf("expected a 50-card deck, got %d", len(game.Deck))
+
+	var created CreatedResearchSingleGame
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to parse creation response: %v", err)
+	}
+	token := path.Base(created.JoinLinks["roster_player_0"])
+	join, ok := researchJoinTokens[token]
+	if !ok {
+		t.Fatalf("magic join token was not registered: %s", token)
+	}
+
+	session := NewFakeSession(join.UserID, join.Username)
+	researchHandleGuestConnected(session)
+
+	table, ok := tables.Get(created.TableID, true)
+	if !ok {
+		t.Fatalf("created table %d does not exist", created.TableID)
+	}
+	table.Lock(nil)
+	defer table.Unlock(nil)
+
+	if !table.Running {
+		t.Fatal("table should auto-start after every reserved seat is present")
+	}
+	if table.Players[1].Session != session {
+		t.Fatal("magic-joined guest session was not bound to its reserved human seat")
+	}
+	if table.Game.Seed != "102" {
+		t.Fatalf("expected public Game Seed to be recorded, got %q", table.Game.Seed)
+	}
+	if len(table.Game.Deck) != 50 {
+		t.Fatalf("expected a 50-card deck, got %d", len(table.Game.Deck))
 	}
 	for index, expected := range payload.SeededInitialLayout.DeckOrder {
-		card := game.Deck[index]
+		card := table.Game.Deck[index]
 		if card.SuitIndex != expected.Color || card.Rank != expected.Rank+1 {
 			t.Fatalf(
 				"deck card %d mismatch: got (%d,%d), want (%d,%d)",
@@ -187,6 +246,80 @@ func TestResearchControlAPICreatesRunningTableFromInjectedLayout(t *testing.T) {
 	}
 }
 
+func TestResearchBotActionEndpointAppliesLegalBotMove(t *testing.T) {
+	researchTestInit(t)
+	router := researchTestRouter()
+	payload := researchSingleGamePayload()
+
+	response := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/single-game",
+		payload,
+		"secret",
+	)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	}
+	var created CreatedResearchSingleGame
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to parse creation response: %v", err)
+	}
+	token := path.Base(created.JoinLinks["roster_player_0"])
+	join := researchJoinTokens[token]
+	researchHandleGuestConnected(NewFakeSession(join.UserID, join.Username))
+
+	statusResponse := researchJSONRequest(
+		t,
+		router,
+		http.MethodGet,
+		"/research/sessions/"+created.GameID+"/status",
+		nil,
+		"secret",
+	)
+	if statusResponse.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", statusResponse.Code, statusResponse.Body.String())
+	}
+	var status map[string]interface{}
+	if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil {
+		t.Fatalf("failed to parse status response: %v", err)
+	}
+	if status["current_turn_roster_player_id"] != "roster_player_1" {
+		t.Fatalf("expected bot to take the first turn, got %#v", status["current_turn_roster_player_id"])
+	}
+	legalActions := status["legal_actions"].([]interface{})
+	if len(legalActions) == 0 {
+		t.Fatal("expected legal bot actions")
+	}
+
+	actionResponse := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/sessions/"+created.GameID+"/bot-action",
+		map[string]interface{}{
+			"roster_player_id": "roster_player_1",
+			"action":           legalActions[0].(string),
+		},
+		"secret",
+	)
+	if actionResponse.Code != http.StatusOK {
+		t.Fatalf("expected bot action 200, got %d: %s", actionResponse.Code, actionResponse.Body.String())
+	}
+
+	table, ok := tables.Get(created.TableID, true)
+	if !ok {
+		t.Fatalf("created table %d does not exist", created.TableID)
+	}
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	game := table.Game
+	if len(game.Actions2) != 1 {
+		t.Fatalf("expected one applied game action, got %d", len(game.Actions2))
+	}
+}
+
 func researchTestInit(t *testing.T) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -195,11 +328,15 @@ func researchTestInit(t *testing.T) {
 	jsonPath = path.Join(projectPath, "packages", "game", "src", "json")
 	tables = NewTables()
 	sessions = NewSessions()
+	researchSessions = make(map[string]*ResearchSession)
+	researchJoinTokens = make(map[string]*ResearchJoinToken)
+	researchGuestUsers = make(map[int]*ResearchJoinToken)
 	isDev = true
 	colorsInit()
 	suitsInit()
 	variantsInit()
 	charactersInit()
+	actionsFunctionsInit()
 }
 
 func researchTestRouter() *gin.Engine {

@@ -90,6 +90,7 @@ func websocketConnect(ms *melody.Session) {
 
 	// Add the session to a map so that we can keep track of all of the connected users
 	sessions.Set(s.UserID, s)
+	researchHandleGuestConnected(s)
 	logger.Info("User \"" + s.Username + "\" connected; " +
 		strconv.Itoa(sessions.Length()) + " user(s) now connected.")
 

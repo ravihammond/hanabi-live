@@ -72,7 +72,10 @@ func httpWS(c *gin.Context) {
 
 	// Get the username for this user
 	var username string
-	if v, err := models.Users.GetUsername(userID); errors.Is(err, pgx.ErrNoRows) {
+	researchUsername, researchGuest := researchGuestUsername(userID)
+	if researchGuest {
+		username = researchUsername
+	} else if v, err := models.Users.GetUsername(userID); errors.Is(err, pgx.ErrNoRows) {
 		// The user has a cookie for a user that does not exist in the database
 		// (e.g. an "orphaned" user)
 		// This can happen in situations where a test user was deleted, for example
@@ -91,11 +94,13 @@ func httpWS(c *gin.Context) {
 	}
 
 	// Validation was successful; update the database with "datetime_last_login" and "last_ip"
-	if err := models.Users.Update(userID, ip); err != nil {
-		msg := "Failed to set \"datetime_last_login\" and \"last_ip\" for user " +
-			"\"" + username + "\": " + err.Error()
-		httpWSError(c, msg)
-		return
+	if !researchGuest {
+		if err := models.Users.Update(userID, ip); err != nil {
+			msg := "Failed to set \"datetime_last_login\" and \"last_ip\" for user " +
+				"\"" + username + "\": " + err.Error()
+			httpWSError(c, msg)
+			return
+		}
 	}
 
 	// Establish the WebSocket connection using the Melody framework

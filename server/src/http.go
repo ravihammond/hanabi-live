@@ -159,6 +159,7 @@ func httpInit() {
 
 	// Attach the sessions middleware
 	httpRouter.Use(gsessions.Sessions(HTTPSessionName, httpSessionStore))
+	registerResearchPublicRoutes(httpRouter)
 
 	// Initialize Google Analytics
 	if len(GATrackingID) > 0 {
