@@ -7,16 +7,7 @@
   -->
   <html lang="en">
     <head>
-      <title>
-        {{- if .IsDev -}}
-          Test
-        {{- else -}}
-          {{ .WebsiteName }}
-          {{- if ne .Title "Main" -}}
-            &nbsp;-{{ .Title }}
-          {{- end -}}
-        {{- end -}}
-      </title>
+      <title>Hanabi</title>
       <meta charset="utf-8" />
       <!-- We remove "user-scalable=no" since we are removing the mobile nav and want them to be able to zoom. -->
       <meta name="viewport" content="width=device-width, initial-scale=1" />
