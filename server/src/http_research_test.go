@@ -35,6 +35,92 @@ func TestResearchControlAPIRejectsInvalidDeckOrder(t *testing.T) {
 	}
 }
 
+func TestResearchControlAPIRejectsInvalidLayoutDetails(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*ResearchCreatePayload)
+		message string
+	}{
+		{
+			name: "card range",
+			mutate: func(payload *ResearchCreatePayload) {
+				payload.SeededInitialLayout.DeckOrder[0] = ResearchCardIdentity{Color: 9, Rank: 0}
+			},
+			message: "outside JAXMARL card ranges",
+		},
+		{
+			name: "card counts",
+			mutate: func(payload *ResearchCreatePayload) {
+				payload.SeededInitialLayout.DeckOrder[0] = ResearchCardIdentity{Color: 0, Rank: 4}
+			},
+			message: "Deck Order has",
+		},
+		{
+			name: "seat order permutation",
+			mutate: func(payload *ResearchCreatePayload) {
+				payload.SeededInitialLayout.SeatOrder = []int{0, 0}
+			},
+			message: "Seat Order must be a permutation",
+		},
+		{
+			name: "assignment map",
+			mutate: func(payload *ResearchCreatePayload) {
+				payload.SeededInitialLayout.RosterPlayerToSeatID = map[string]string{
+					"0": "seat_0",
+					"1": "seat_1",
+				}
+			},
+			message: "assignment must be derived from Seat Order",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			researchTestInit(t)
+			router := researchTestRouter()
+			payload := researchSingleGamePayload()
+			test.mutate(&payload)
+
+			response := researchJSONRequest(
+				t,
+				router,
+				http.MethodPost,
+				"/research/single-game",
+				payload,
+				"secret",
+			)
+
+			if response.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("expected 422, got %d: %s", response.Code, response.Body.String())
+			}
+			if !bytes.Contains(response.Body.Bytes(), []byte(test.message)) {
+				t.Fatalf("missing validation message %q: %s", test.message, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestResearchControlAPIRequiresAdminToken(t *testing.T) {
+	researchTestInit(t)
+	router := researchTestRouter()
+
+	response := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/single-game",
+		researchSingleGamePayload(),
+		"",
+	)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", response.Code, response.Body.String())
+	}
+	if !bytes.Contains(response.Body.Bytes(), []byte("Admin token is required")) {
+		t.Fatalf("missing admin-token validation message: %s", response.Body.String())
+	}
+}
+
 func TestResearchControlAPICreatesRunningTableFromInjectedLayout(t *testing.T) {
 	researchTestInit(t)
 	router := researchTestRouter()
