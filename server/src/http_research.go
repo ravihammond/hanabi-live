@@ -86,6 +86,18 @@ type CreatedResearchPregameTable struct {
 	UsesPublicLobby  bool              `json:"uses_public_lobby"`
 }
 
+type ResearchBotJoinSessionPayload struct {
+	RosterPlayerID string `json:"roster_player_id"`
+}
+
+type CreatedResearchBotJoinSession struct {
+	GameID         string `json:"game_id"`
+	RosterPlayerID string `json:"roster_player_id"`
+	JoinCredential string `json:"join_credential"`
+	ServerURL      string `json:"server_url"`
+	OurPlayerIndex int    `json:"our_player_index"`
+}
+
 type OpenedResearchReplay struct {
 	GameID       string `json:"game_id"`
 	ReplayURL    string `json:"replay_url"`
@@ -94,17 +106,18 @@ type OpenedResearchReplay struct {
 }
 
 type ResearchSession struct {
-	GameID                string
-	TableID               uint64
-	Mode                  string
-	Seed                  int
-	CurrentGameIndex      int
-	ReadyStatus           map[string]bool
-	CompletedGames        []map[string]interface{}
-	SeatOrder             []int
-	RosterPlayerToSeatID  map[string]string
-	RosterPlayerIDsBySeat []string
-	BotRosterPlayerIDs    map[string]bool
+	GameID                  string
+	TableID                 uint64
+	Mode                    string
+	Seed                    int
+	CurrentGameIndex        int
+	ReadyStatus             map[string]bool
+	CompletedGames          []map[string]interface{}
+	SeatOrder               []int
+	RosterPlayerToSeatID    map[string]string
+	RosterPlayerIDsBySeat   []string
+	RosterPlayerNamesBySeat []string
+	BotRosterPlayerIDs      map[string]bool
 }
 
 type ResearchJoinToken struct {
@@ -143,6 +156,7 @@ func registerResearchRoutes(router *gin.Engine) {
 	router.POST("/research/sessions/:gameID/current-game-layout", researchUpdateCurrentGameLayout)
 	router.GET("/research/sessions/:gameID/status", researchGetSessionStatus)
 	router.POST("/research/sessions/:gameID/bot-action", researchPostBotAction)
+	router.POST("/research/sessions/:gameID/bot-join-session", researchCreateBotJoinSession)
 }
 
 func registerResearchPublicRoutes(router *gin.Engine) {
@@ -182,6 +196,7 @@ func researchCreateSingleGame(c *gin.Context) {
 	gameSeed := researchGameSeed(payload.Game)
 	gameID := fmt.Sprintf("single_game_%d", gameSeed)
 	rosterPlayerIDsBySeat := researchRosterPlayerIDsBySeat(payload.RosterPlayers, layout.seatOrder)
+	rosterPlayerNamesBySeat := researchRosterPlayerNamesBySeat(payload.RosterPlayers, layout.seatOrder, payload.Game.IdentityDisplay)
 	botRosterPlayerIDs := researchBotRosterPlayerIDs(payload.RosterPlayers)
 	joinLinks := researchRegisterJoinLinks(gameID, table.ID, payload, layout)
 	created := CreatedResearchSingleGame{
@@ -195,13 +210,14 @@ func researchCreateSingleGame(c *gin.Context) {
 	}
 	researchSessionsMutex.Lock()
 	researchSessions[gameID] = &ResearchSession{
-		GameID:                gameID,
-		TableID:               table.ID,
-		Mode:                  "single_game",
-		SeatOrder:             append([]int(nil), layout.seatOrder...),
-		RosterPlayerToSeatID:  copyStringMap(layout.rosterPlayerToSeatID),
-		RosterPlayerIDsBySeat: rosterPlayerIDsBySeat,
-		BotRosterPlayerIDs:    botRosterPlayerIDs,
+		GameID:                  gameID,
+		TableID:                 table.ID,
+		Mode:                    "single_game",
+		SeatOrder:               append([]int(nil), layout.seatOrder...),
+		RosterPlayerToSeatID:    copyStringMap(layout.rosterPlayerToSeatID),
+		RosterPlayerIDsBySeat:   rosterPlayerIDsBySeat,
+		RosterPlayerNamesBySeat: rosterPlayerNamesBySeat,
+		BotRosterPlayerIDs:      botRosterPlayerIDs,
 	}
 	researchSessionsMutex.Unlock()
 	c.JSON(http.StatusCreated, created)
@@ -230,6 +246,9 @@ func researchCreatePregameTable(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
 		return
 	}
+	rosterPlayerIDsBySeat := researchRosterPlayerIDsBySeat(payload.RosterPlayers, layout.seatOrder)
+	rosterPlayerNamesBySeat := researchRosterPlayerNamesBySeat(payload.RosterPlayers, layout.seatOrder, payload.Game.IdentityDisplay)
+	botRosterPlayerIDs := researchBotRosterPlayerIDs(payload.RosterPlayers)
 
 	tableID := fmt.Sprintf("pregame_table_%d", payload.Game.Seed)
 	readyStatus := make(map[string]bool)
@@ -248,14 +267,17 @@ func researchCreatePregameTable(c *gin.Context) {
 
 	researchSessionsMutex.Lock()
 	researchSessions[tableID] = &ResearchSession{
-		GameID:               tableID,
-		Mode:                 "pregame_table",
-		Seed:                 payload.Game.Seed,
-		CurrentGameIndex:     0,
-		ReadyStatus:          readyStatus,
-		CompletedGames:       make([]map[string]interface{}, 0),
-		SeatOrder:            append([]int(nil), layout.seatOrder...),
-		RosterPlayerToSeatID: copyStringMap(layout.rosterPlayerToSeatID),
+		GameID:                  tableID,
+		Mode:                    "pregame_table",
+		Seed:                    payload.Game.Seed,
+		CurrentGameIndex:        0,
+		ReadyStatus:             readyStatus,
+		CompletedGames:          make([]map[string]interface{}, 0),
+		SeatOrder:               append([]int(nil), layout.seatOrder...),
+		RosterPlayerToSeatID:    copyStringMap(layout.rosterPlayerToSeatID),
+		RosterPlayerIDsBySeat:   rosterPlayerIDsBySeat,
+		RosterPlayerNamesBySeat: rosterPlayerNamesBySeat,
+		BotRosterPlayerIDs:      botRosterPlayerIDs,
 	}
 	researchSessionsMutex.Unlock()
 	c.JSON(http.StatusCreated, created)
@@ -361,6 +383,80 @@ func researchGetSessionStatus(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, researchSessionStatus(session))
+}
+
+func researchCreateBotJoinSession(c *gin.Context) {
+	if !researchRequireAdminToken(c) {
+		return
+	}
+
+	var payload ResearchBotJoinSessionPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
+		return
+	}
+	if payload.RosterPlayerID == "" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "Bot join session requires roster_player_id."})
+		return
+	}
+
+	gameID := c.Param("gameID")
+	researchSessionsMutex.Lock()
+	session, ok := researchSessions[gameID]
+	if !ok {
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusNotFound, gin.H{"detail": "Research session is not valid."})
+		return
+	}
+	if !session.BotRosterPlayerIDs[payload.RosterPlayerID] {
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "Research Bot Join Sessions can only be minted for bot Roster Players."})
+		return
+	}
+
+	seatIndex := -1
+	for index, rosterPlayerID := range session.RosterPlayerIDsBySeat {
+		if rosterPlayerID == payload.RosterPlayerID {
+			seatIndex = index
+			break
+		}
+	}
+	if seatIndex < 0 {
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "Bot Roster Player is not assigned to a seat."})
+		return
+	}
+
+	rosterIndex := 0
+	if seatIndex < len(session.SeatOrder) {
+		rosterIndex = session.SeatOrder[seatIndex]
+	}
+	username := payload.RosterPlayerID
+	if seatIndex < len(session.RosterPlayerNamesBySeat) && session.RosterPlayerNamesBySeat[seatIndex] != "" {
+		username = session.RosterPlayerNamesBySeat[seatIndex]
+	}
+	token := researchNewJoinToken()
+	join := &ResearchJoinToken{
+		Token:          token,
+		GameID:         session.GameID,
+		TableID:        session.TableID,
+		RosterPlayerID: payload.RosterPlayerID,
+		RosterIndex:    rosterIndex,
+		SeatIndex:      seatIndex,
+		UserID:         researchUserIDForTableSeat(session.TableID, seatIndex),
+		Username:       username,
+	}
+	researchJoinTokens[token] = join
+	researchGuestUsers[join.UserID] = join
+	researchSessionsMutex.Unlock()
+
+	c.JSON(http.StatusCreated, CreatedResearchBotJoinSession{
+		GameID:         session.GameID,
+		RosterPlayerID: payload.RosterPlayerID,
+		JoinCredential: token,
+		ServerURL:      researchPublicBaseURL(),
+		OurPlayerIndex: seatIndex,
+	})
 }
 
 func researchPostBotAction(c *gin.Context) {
@@ -761,6 +857,18 @@ func researchRosterPlayerIDsBySeat(players []ResearchRosterPlayer, seatOrder []i
 	return ids
 }
 
+func researchRosterPlayerNamesBySeat(players []ResearchRosterPlayer, seatOrder []int, identityDisplay string) []string {
+	playerByRosterIndex := make(map[int]ResearchRosterPlayer)
+	for _, player := range players {
+		playerByRosterIndex[player.RosterIndex] = player
+	}
+	names := make([]string, 0, len(seatOrder))
+	for seatIndex, rosterIndex := range seatOrder {
+		names = append(names, researchDisplayName(identityDisplay, playerByRosterIndex[rosterIndex], seatIndex))
+	}
+	return names
+}
+
 func researchBotRosterPlayerIDs(players []ResearchRosterPlayer) map[string]bool {
 	botIDs := make(map[string]bool)
 	for _, player := range players {
@@ -973,6 +1081,13 @@ func researchIsGuestUser(userID int) bool {
 	defer researchSessionsMutex.Unlock()
 	_, ok := researchGuestUsers[userID]
 	return ok
+}
+
+func researchKeepsTableSeatOnSessionReplacement(newSession *Session, oldSession *Session) bool {
+	return newSession != nil &&
+		oldSession != nil &&
+		oldSession.FakeUser &&
+		researchIsGuestUser(newSession.UserID)
 }
 
 func researchHandleGuestConnected(s *Session) {

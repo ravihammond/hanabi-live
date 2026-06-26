@@ -431,6 +431,99 @@ func TestResearchBotActionEndpointAppliesLegalBotMove(t *testing.T) {
 	}
 }
 
+func TestResearchControlAPIMintsBotJoinSession(t *testing.T) {
+	researchTestInit(t)
+	router := researchTestRouter()
+	payload := researchSingleGamePayload()
+
+	response := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/single-game",
+		payload,
+		"secret",
+	)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	}
+	var created CreatedResearchSingleGame
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to parse creation response: %v", err)
+	}
+
+	joinResponse := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/sessions/"+created.GameID+"/bot-join-session",
+		map[string]interface{}{"roster_player_id": "roster_player_1"},
+		"secret",
+	)
+	if joinResponse.Code != http.StatusCreated {
+		t.Fatalf("expected bot join-session 201, got %d: %s", joinResponse.Code, joinResponse.Body.String())
+	}
+	var joined CreatedResearchBotJoinSession
+	if err := json.Unmarshal(joinResponse.Body.Bytes(), &joined); err != nil {
+		t.Fatalf("failed to parse bot join-session response: %v", err)
+	}
+	if joined.GameID != created.GameID {
+		t.Fatalf("expected game ID %s, got %#v", created.GameID, joined)
+	}
+	if joined.RosterPlayerID != "roster_player_1" {
+		t.Fatalf("expected bot roster player, got %#v", joined)
+	}
+	if joined.JoinCredential == "" {
+		t.Fatalf("expected non-empty join credential, got %#v", joined)
+	}
+	if joined.OurPlayerIndex != 0 {
+		t.Fatalf("expected bot to own seat index 0, got %#v", joined)
+	}
+	userID, username, ok := researchMagicJoinTokenCredentials(joined.JoinCredential)
+	if !ok {
+		t.Fatal("expected bot join credential to resolve websocket credentials")
+	}
+	if username == "" || userID == 0 {
+		t.Fatalf("expected concrete bot credentials, got userID=%d username=%q", userID, username)
+	}
+	oldSession, ok := sessions.Get(userID)
+	if !ok || !oldSession.FakeUser {
+		t.Fatalf("expected bot seat to start with a reserved fake session, got %#v", oldSession)
+	}
+	realSession := NewFakeSession(userID, username)
+	realSession.FakeUser = false
+	if !researchKeepsTableSeatOnSessionReplacement(realSession, oldSession) {
+		t.Fatal("expected native bot websocket replacement to preserve table membership")
+	}
+	websocketDisconnectRemoveFromMap(oldSession)
+	sessions.Set(realSession.UserID, realSession)
+	researchHandleGuestConnected(realSession)
+	table, ok := tables.Get(created.TableID, true)
+	if !ok {
+		t.Fatalf("created table %d does not exist", created.TableID)
+	}
+	table.Lock(nil)
+	if table.Players[0].Session != realSession {
+		t.Fatal("native bot websocket session was not rebound to its reserved seat")
+	}
+	if !table.Players[0].Present {
+		t.Fatal("native bot websocket session should keep its reserved seat present")
+	}
+	table.Unlock(nil)
+
+	humanResponse := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/sessions/"+created.GameID+"/bot-join-session",
+		map[string]interface{}{"roster_player_id": "roster_player_0"},
+		"secret",
+	)
+	if humanResponse.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected human join-session rejection 422, got %d: %s", humanResponse.Code, humanResponse.Body.String())
+	}
+}
+
 func TestResearchLegalActionsIncludeEveryVisibleClue(t *testing.T) {
 	researchTestInit(t)
 	router := researchTestRouter()

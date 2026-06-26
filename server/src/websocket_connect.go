@@ -77,11 +77,15 @@ func websocketConnect(ms *melody.Session) {
 	sessions.ConnectMutex.Lock()
 	defer sessions.ConnectMutex.Unlock()
 
+	researchGuest := researchIsGuestUser(s.UserID)
+
 	// Disconnect any existing connections with this user ID
 	if s2, ok := sessions.Get(s.UserID); ok {
 		logger.Info("Closing existing connection for user: " + s.Username)
 		s2.Error("You have logged on from somewhere else, so you have been disconnected here.")
-		if err := s2.ms.Close(); err != nil {
+		if s2.ms == nil {
+			logger.Info("Existing connection for user was a fake session.")
+		} else if err := s2.ms.Close(); err != nil {
 			// This can occasionally fail and we do not want to report the error to Sentry
 			logger.Info("Failed to manually close a WebSocket connection.")
 		} else {
@@ -93,10 +97,11 @@ func websocketConnect(ms *melody.Session) {
 		// Thus, we need to manually clean up the user from the global session map and any ongoing
 		// games
 		websocketDisconnectRemoveFromMap(s2)
-		websocketDisconnectRemoveFromGames(ctx, s2)
+		if !researchKeepsTableSeatOnSessionReplacement(s, s2) {
+			websocketDisconnectRemoveFromGames(ctx, s2)
+		}
 	}
 
-	researchGuest := researchIsGuestUser(s.UserID)
 	if researchGuest {
 		websocketConnectWelcomeMessage(s, data)
 	} else {
