@@ -249,6 +249,11 @@ func researchCreatePregameTable(c *gin.Context) {
 	rosterPlayerIDsBySeat := researchRosterPlayerIDsBySeat(payload.RosterPlayers, layout.seatOrder)
 	rosterPlayerNamesBySeat := researchRosterPlayerNamesBySeat(payload.RosterPlayers, layout.seatOrder, payload.Game.IdentityDisplay)
 	botRosterPlayerIDs := researchBotRosterPlayerIDs(payload.RosterPlayers)
+	table, err := createResearchSingleGameTable(payload, layout)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": err.Error()})
+		return
+	}
 
 	tableID := fmt.Sprintf("pregame_table_%d", payload.Game.Seed)
 	readyStatus := make(map[string]bool)
@@ -260,7 +265,7 @@ func researchCreatePregameTable(c *gin.Context) {
 		Mode:             "pregame_table",
 		Seed:             payload.Game.Seed,
 		CurrentGameIndex: 0,
-		JoinLinks:        researchPregameJoinLinks(payload.RosterPlayers, tableID),
+		JoinLinks:        researchRegisterJoinLinks(tableID, table.ID, payload, layout),
 		ReadyStatus:      readyStatus,
 		UsesPublicLobby:  false,
 	}
@@ -268,6 +273,7 @@ func researchCreatePregameTable(c *gin.Context) {
 	researchSessionsMutex.Lock()
 	researchSessions[tableID] = &ResearchSession{
 		GameID:                  tableID,
+		TableID:                 table.ID,
 		Mode:                    "pregame_table",
 		Seed:                    payload.Game.Seed,
 		CurrentGameIndex:        0,

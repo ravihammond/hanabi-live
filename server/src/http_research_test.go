@@ -524,6 +524,63 @@ func TestResearchControlAPIMintsBotJoinSession(t *testing.T) {
 	}
 }
 
+func TestResearchControlAPIMintsPregameBotJoinSessionForActualTable(t *testing.T) {
+	researchTestInit(t)
+	router := researchTestRouter()
+	payload := researchSingleGamePayload()
+	payload.Mode = "pregame_table"
+	payload.Game.GameIndex = 0
+	payload.Game.GameSeed = researchIntPtr(payload.Game.Seed)
+
+	response := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/pregame-table",
+		payload,
+		"secret",
+	)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	}
+	var created CreatedResearchPregameTable
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to parse creation response: %v", err)
+	}
+
+	joinResponse := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/sessions/"+created.TableID+"/bot-join-session",
+		map[string]interface{}{"roster_player_id": "roster_player_1"},
+		"secret",
+	)
+	if joinResponse.Code != http.StatusCreated {
+		t.Fatalf("expected bot join-session 201, got %d: %s", joinResponse.Code, joinResponse.Body.String())
+	}
+	var joined CreatedResearchBotJoinSession
+	if err := json.Unmarshal(joinResponse.Body.Bytes(), &joined); err != nil {
+		t.Fatalf("failed to parse bot join-session response: %v", err)
+	}
+	join, ok := researchJoinTokens[joined.JoinCredential]
+	if !ok {
+		t.Fatal("expected bot join credential to register a magic-join token")
+	}
+	if join.TableID == 0 {
+		t.Fatalf("expected bot join credential to bind to a real Hanabi.live table, got %#v", join)
+	}
+	table, ok := tables.Get(join.TableID, true)
+	if !ok {
+		t.Fatalf("expected table %d to exist for Pregame Table join session", join.TableID)
+	}
+	table.Lock(nil)
+	if table.Players[join.SeatIndex].UserID != join.UserID {
+		t.Fatalf("expected join user %d in seat %d, got table players %#v", join.UserID, join.SeatIndex, table.Players)
+	}
+	table.Unlock(nil)
+}
+
 func TestResearchLegalActionsIncludeEveryVisibleClue(t *testing.T) {
 	researchTestInit(t)
 	router := researchTestRouter()
