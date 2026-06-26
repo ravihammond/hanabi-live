@@ -1,5 +1,6 @@
 // The site has the ability to send (optional) notifications.
 
+import { PROJECT_NAME } from "@hanabi-live/data";
 import * as modals from "./modals";
 
 export function test(): void {
@@ -41,7 +42,7 @@ export function send(msg: string, tag: string | undefined): void {
     return;
   }
 
-  const notification = new Notification(`Hanab Live: ${msg}`, {
+  const notification = new Notification(`${PROJECT_NAME}: ${msg}`, {
     icon: "/public/img/favicon-32x32.png",
     tag,
   });

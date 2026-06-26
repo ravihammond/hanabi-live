@@ -1,4 +1,4 @@
-export const PROJECT_NAME = "Hanab Live";
+export const PROJECT_NAME = "Hanabi";
 export const DOMAIN = "hanab.live";
 export const OLD_DOMAIN = "hanabi.live";
 const PROTOCOL = "https";

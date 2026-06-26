@@ -7,14 +7,10 @@
 <html lang="en">
   <head>
     <title>
-    {{_ if (it.isDev) { _}}
-      Test
-    {{_ } else { _}}
       {{ =it.projectName }}
       {{_ if (it.title !== "Main") { _}}
         &nbsp;-{{ =it.title }}
       {{_ } _}}
-    {{_ } _}}
     </title>
     <meta charset="utf-8" />
     <!-- We remove "user-scalable=no" since we are removing the mobile nav and want them to be able to zoom. -->

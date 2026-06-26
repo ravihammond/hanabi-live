@@ -23,11 +23,12 @@ const (
 )
 
 var (
-	researchDeckCountsByRank = []int{3, 2, 2, 2, 1}
-	researchSessions         = make(map[string]*ResearchSession)
-	researchJoinTokens       = make(map[string]*ResearchJoinToken)
-	researchGuestUsers       = make(map[int]*ResearchJoinToken)
-	researchSessionsMutex    sync.Mutex
+	researchDeckCountsByRank                  = []int{3, 2, 2, 2, 1}
+	researchJAXMARLColorToHanabiLiveSuitIndex = []int{0, 1, 2, 4, 3}
+	researchSessions                          = make(map[string]*ResearchSession)
+	researchJoinTokens                        = make(map[string]*ResearchJoinToken)
+	researchGuestUsers                        = make(map[int]*ResearchJoinToken)
+	researchSessionsMutex                     sync.Mutex
 )
 
 type ResearchCardIdentity struct {
@@ -565,7 +566,7 @@ func validateResearchDeckOrder(deckOrder []ResearchCardIdentity) ([]*CardIdentit
 		}
 		counts[researchCardKey(card.Color, card.Rank)]++
 		converted = append(converted, &CardIdentity{
-			SuitIndex: card.Color,
+			SuitIndex: researchHanabiLiveSuitIndexFromJAXMARLColor(card.Color),
 			Rank:      card.Rank + 1,
 		})
 	}
@@ -578,6 +579,11 @@ func validateResearchDeckOrder(deckOrder []ResearchCardIdentity) ([]*CardIdentit
 		}
 	}
 	return converted, nil
+}
+
+func researchHanabiLiveSuitIndexFromJAXMARLColor(color int) int {
+	// JAXMARL cards are R,Y,G,W,B; Hanabi.live No Variant suits are R,Y,G,B,P.
+	return researchJAXMARLColorToHanabiLiveSuitIndex[color]
 }
 
 func validateResearchSeatOrder(seatOrder []int, numPlayers int) ([]int, error) {
@@ -929,17 +935,26 @@ func researchLegalActions(game *Game) []string {
 			if targetIndex == game.ActivePlayerIndex || len(targetPlayer.Hand) == 0 {
 				continue
 			}
-			card := targetPlayer.Hand[0]
-			actions = append(actions, researchEncodeAction(ResearchBotAction{
-				Type:   ActionTypeRankClue,
-				Target: targetIndex,
-				Value:  card.Rank,
-			}))
-			actions = append(actions, researchEncodeAction(ResearchBotAction{
-				Type:   ActionTypeColorClue,
-				Target: targetIndex,
-				Value:  card.SuitIndex,
-			}))
+			seenRanks := make(map[int]bool)
+			seenColors := make(map[int]bool)
+			for _, card := range targetPlayer.Hand {
+				if !seenRanks[card.Rank] {
+					actions = append(actions, researchEncodeAction(ResearchBotAction{
+						Type:   ActionTypeRankClue,
+						Target: targetIndex,
+						Value:  card.Rank,
+					}))
+					seenRanks[card.Rank] = true
+				}
+				if !seenColors[card.SuitIndex] {
+					actions = append(actions, researchEncodeAction(ResearchBotAction{
+						Type:   ActionTypeColorClue,
+						Target: targetIndex,
+						Value:  card.SuitIndex,
+					}))
+					seenColors[card.SuitIndex] = true
+				}
+			}
 		}
 	}
 	return actions

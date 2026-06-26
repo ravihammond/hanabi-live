@@ -85,7 +85,7 @@ const (
 )
 
 const (
-	WebsiteName = "Hanab Live"
+	WebsiteName = "Hanabi"
 
 	// The maximum amount of clues (and the amount of clues that players start the game with)
 	MaxClueNum = 8

@@ -8,13 +8,9 @@
   <html lang="en">
     <head>
       <title>
-        {{- if .IsDev -}}
-          Test
-        {{- else -}}
-          {{ .WebsiteName }}
-          {{- if ne .Title "Main" -}}
-            &nbsp;-{{ .Title }}
-          {{- end -}}
+        {{- .WebsiteName -}}
+        {{- if ne .Title "Main" -}}
+          &nbsp;-{{ .Title }}
         {{- end -}}
       </title>
       <meta charset="utf-8" />

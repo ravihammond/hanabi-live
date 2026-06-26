@@ -343,13 +343,14 @@ func TestResearchMagicJoinGuestConnectionAutoStartsInjectedTable(t *testing.T) {
 	}
 	for index, expected := range payload.SeededInitialLayout.DeckOrder {
 		card := table.Game.Deck[index]
-		if card.SuitIndex != expected.Color || card.Rank != expected.Rank+1 {
+		expectedSuitIndex := researchExpectedLiveSuitIndexForJAXMARLColor(expected.Color)
+		if card.SuitIndex != expectedSuitIndex || card.Rank != expected.Rank+1 {
 			t.Fatalf(
 				"deck card %d mismatch: got (%d,%d), want (%d,%d)",
 				index,
 				card.SuitIndex,
 				card.Rank,
-				expected.Color,
+				expectedSuitIndex,
 				expected.Rank+1,
 			)
 		}
@@ -427,6 +428,79 @@ func TestResearchBotActionEndpointAppliesLegalBotMove(t *testing.T) {
 	game := table.Game
 	if len(game.Actions2) != 1 {
 		t.Fatalf("expected one applied game action, got %d", len(game.Actions2))
+	}
+}
+
+func TestResearchLegalActionsIncludeEveryVisibleClue(t *testing.T) {
+	researchTestInit(t)
+	router := researchTestRouter()
+	payload := researchSingleGamePayload()
+
+	response := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/single-game",
+		payload,
+		"secret",
+	)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	}
+	var created CreatedResearchSingleGame
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to parse creation response: %v", err)
+	}
+	token := path.Base(created.JoinLinks["roster_player_0"])
+	join := researchJoinTokens[token]
+	researchHandleGuestConnected(NewFakeSession(join.UserID, join.Username))
+
+	statusResponse := researchJSONRequest(
+		t,
+		router,
+		http.MethodGet,
+		"/research/sessions/"+created.GameID+"/status",
+		nil,
+		"secret",
+	)
+	if statusResponse.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", statusResponse.Code, statusResponse.Body.String())
+	}
+	var status map[string]interface{}
+	if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil {
+		t.Fatalf("failed to parse status response: %v", err)
+	}
+	legalActions := status["legal_actions"].([]interface{})
+	legalActionSet := make(map[string]bool, len(legalActions))
+	for _, action := range legalActions {
+		legalActionSet[action.(string)] = true
+	}
+
+	table, ok := tables.Get(created.TableID, true)
+	if !ok {
+		t.Fatalf("created table %d does not exist", created.TableID)
+	}
+	table.Lock(nil)
+	targetHand := append([]*Card(nil), table.Game.Players[1].Hand...)
+	table.Unlock(nil)
+
+	for _, card := range targetHand {
+		expectedRankClue := researchEncodeAction(ResearchBotAction{
+			Type:   ActionTypeRankClue,
+			Target: 1,
+			Value:  card.Rank,
+		})
+		if !legalActionSet[expectedRankClue] {
+			t.Fatalf("missing legal rank clue %s from %#v", expectedRankClue, legalActions)
+		}
+		expectedColorClue := researchEncodeAction(ResearchBotAction{
+			Type:   ActionTypeColorClue,
+			Target: 1,
+			Value:  card.SuitIndex,
+		})
+		if !legalActionSet[expectedColorClue] {
+			t.Fatalf("missing legal color clue %s from %#v", expectedColorClue, legalActions)
+		}
 	}
 }
 
@@ -532,4 +606,14 @@ func researchValidDeck() []ResearchCardIdentity {
 		}
 	}
 	return deck
+}
+
+func researchExpectedLiveSuitIndexForJAXMARLColor(color int) int {
+	if color == 3 {
+		return 4
+	}
+	if color == 4 {
+		return 3
+	}
+	return color
 }
