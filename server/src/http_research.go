@@ -6,15 +6,18 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	gsessions "github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 )
 
 const (
@@ -161,10 +164,52 @@ func registerResearchRoutes(router *gin.Engine) {
 
 func registerResearchPublicRoutes(router *gin.Engine) {
 	router.GET("/join/:token", researchMagicJoin)
+	router.GET("/research/tunnel-ws-health", researchTunnelWebSocketHealth)
 }
 
 func researchHealth(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func researchTunnelWebSocketHealth(c *gin.Context) {
+	upgrader := websocket.Upgrader{ // nolint: exhaustivestruct
+		CheckOrigin: researchTrustedTunnelOrigin,
+	}
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	if err := conn.WriteMessage(websocket.TextMessage, []byte("ok")); err != nil {
+		return
+	}
+}
+
+func researchTrustedTunnelOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	host := parsed.Hostname()
+	if host == "" {
+		return false
+	}
+	if host == researchRequestHostname(r.Host) {
+		return true
+	}
+	return strings.HasSuffix(host, ".trycloudflare.com")
+}
+
+func researchRequestHostname(host string) string {
+	hostname, _, err := net.SplitHostPort(host)
+	if err == nil {
+		return hostname
+	}
+	return host
 }
 
 func researchCreateSingleGame(c *gin.Context) {

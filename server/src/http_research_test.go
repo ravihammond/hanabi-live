@@ -8,11 +8,13 @@ import (
 	"os"
 	"path"
 	"strconv"
+	"strings"
 	"testing"
 
 	gsessions "github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 )
 
 func TestResearchControlAPIRejectsInvalidDeckOrder(t *testing.T) {
@@ -354,6 +356,35 @@ func TestResearchMagicJoinGuestConnectionAutoStartsInjectedTable(t *testing.T) {
 				expected.Rank+1,
 			)
 		}
+	}
+}
+
+func TestResearchTunnelWebSocketHealthAcceptsTrycloudflareOrigin(t *testing.T) {
+	researchTestInit(t)
+	router := researchTestRouter()
+	server := httptest.NewServer(router)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/research/tunnel-ws-health"
+	headers := http.Header{}
+	headers.Set("Origin", "https://quiet-river-123.trycloudflare.com")
+
+	conn, response, err := websocket.DefaultDialer.Dial(wsURL, headers)
+	if err != nil {
+		status := "<nil>"
+		if response != nil {
+			status = response.Status
+		}
+		t.Fatalf("expected tunnel websocket health to connect, got %s: %v", status, err)
+	}
+	defer conn.Close()
+
+	_, message, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("expected websocket health message: %v", err)
+	}
+	if string(message) != "ok" {
+		t.Fatalf("expected websocket health message ok, got %q", string(message))
 	}
 }
 
