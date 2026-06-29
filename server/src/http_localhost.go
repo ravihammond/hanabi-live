@@ -28,6 +28,10 @@ func httpLocalhostInit() {
 			port = v
 		}
 	}
+	host := os.Getenv("LOCALHOST_HOST")
+	if host == "" {
+		host = "127.0.0.1"
+	}
 
 	// Create a new Gin HTTP router
 	httpRouter := gin.Default() // Has the "Logger" and "Recovery" middleware attached
@@ -60,7 +64,7 @@ func httpLocalhostInit() {
 	// We need to create a new http.Server because the default one has no timeouts
 	// https://blog.cloudflare.com/the-complete-guide-to-golang-net-http-timeouts/
 	HTTPServerWithTimeout := &http.Server{ // nolint: exhaustivestruct
-		Addr:         "127.0.0.1:" + strconv.Itoa(port), // Listen only on the localhost interface
+		Addr:         host + ":" + strconv.Itoa(port),
 		Handler:      httpRouter,
 		ReadTimeout:  HTTPReadTimeout,
 		WriteTimeout: HTTPWriteTimeout,
