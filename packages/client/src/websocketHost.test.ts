@@ -15,12 +15,12 @@ describe("websocketHostIsAllowed", () => {
     ).toBe(true);
   });
 
-  test("accepts localhost.run hosts for localhost research sessions", () => {
+  test("rejects retired localhost.run hosts for localhost research sessions", () => {
     expect(
       websocketHostIsAllowed("quiet-river-123.localhost.run", "localhost"),
-    ).toBe(true);
+    ).toBe(false);
     expect(websocketHostIsAllowed("f0691c1ab27edb.lhr.life", "localhost")).toBe(
-      true,
+      false,
     );
   });
 

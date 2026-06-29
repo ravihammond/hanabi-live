@@ -12,9 +12,5 @@ export function websocketHostIsAllowed(
 }
 
 function remoteTunnelHostIsAllowed(currentHostname: string): boolean {
-  return (
-    currentHostname.endsWith(".trycloudflare.com")
-    || currentHostname.endsWith(".localhost.run")
-    || currentHostname.endsWith(".lhr.life")
-  );
+  return currentHostname.endsWith(".trycloudflare.com");
 }
