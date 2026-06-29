@@ -8,11 +8,12 @@ import { globals } from "./Globals";
 import { lobbyCommands } from "./lobby/lobbyCommands";
 import { Screen } from "./lobby/types/Screen";
 import * as modals from "./modals";
+import { websocketHostIsAllowed } from "./websocketHost";
 
 export function websocketInit(): void {
   // Ensure that we are connecting to the right URL.
   const domain = $("#domain").html();
-  if (globalThis.location.hostname !== domain) {
+  if (!websocketHostIsAllowed(globalThis.location.hostname, domain)) {
     modals.showError(`You are supposed to connect using the URL of: ${domain}`);
     return;
   }
