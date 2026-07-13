@@ -210,6 +210,7 @@ function createGameTooltips() {
     "leader",
     "lobby",
     "lobby-small",
+    "new-game",
     "time-taken",
     "pace",
     "replay",

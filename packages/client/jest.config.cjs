@@ -16,7 +16,8 @@ const tsconfig = jsoncParser.parse(tsconfigString);
 /** @type {import("ts-jest/dist/types").JestConfigWithTsJest} */
 const config = {
   preset: "ts-jest",
-  testEnvironment: "node",
+  testEnvironment: "jsdom",
+  setupFiles: ["<rootDir>/src/test/setupBrowser.ts"],
 
   // From: https://kulshekhar.github.io/ts-jest/docs/getting-started/paths-mapping/
   roots: ["<rootDir>"],

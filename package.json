@@ -82,6 +82,7 @@
     "git-pull-run": "1.6.2",
     "husky": "9.1.7",
     "jest": "30.3.0",
+    "jest-environment-jsdom": "30.3.0",
     "prettier-plugin-go-template": "0.0.15",
     "prettier-plugin-sh": "0.18.1",
     "stacktracify": "1.0.4",

@@ -58,7 +58,7 @@ import { getCardOrStackBase } from "./getCardOrStackBase";
 import * as hypothetical from "./hypothetical";
 import { initKonvaTooltips } from "./konvaTooltips";
 import * as replay from "./replay";
-import { createResearchRestartModal } from "./researchRestartModal";
+import { createResearchRestartButton } from "./researchRestartButton";
 import {
   canNavigateToLobby,
   singleGameBottomLeftControls,
@@ -614,21 +614,13 @@ function drawBottomLeftButtons() {
     h: bottomLeftButtonValues.h,
   };
   if (controls.includes("new_game")) {
-    const newGameButton = new Button({
+    const newGameButton = createResearchRestartButton({
       x: lobbyButtonValues.x * winW,
       y: lobbyButtonValues.y * winH,
       width: bottomLeftButtonValues.w! * winW,
       height: lobbyButtonValues.h! * winH,
-      text: "New Game",
     });
     globals.layers.UI.add(newGameButton as unknown as Konva.Group);
-    newGameButton.on("click tap", () => {
-      globals.elements.restartArea?.show();
-      globals.layers.UI2.batchDraw();
-    });
-    newGameButton.tooltipName = "new-game";
-    newGameButton.tooltipContent =
-      "Restart this seed or advance this persistent Single Game run to its next game index.";
     initKonvaTooltips(newGameButton, true, false);
     globals.elements.newGameButton = newGameButton;
     return;
@@ -2522,21 +2514,6 @@ function drawPauseArea() {
 
 function drawRestartArea() {
   if (globals.researchRestartController) {
-    const width = 0.7 * winW;
-    const height = 0.6 * winH;
-    const restartModal = createResearchRestartModal({
-      width,
-      height,
-      onRestartRequested: (restartKind) => {
-        globals.lobby.conn!.send("researchRestart", {
-          tableID: globals.lobby.tableID,
-          restartKind,
-        });
-      },
-    });
-    restartModal.position({ x: 0.15 * winW, y: 0.2 * winH });
-    globals.elements.restartArea = restartModal;
-    globals.layers.UI2.add(restartModal);
     return;
   }
 

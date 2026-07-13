@@ -10,6 +10,7 @@ import * as tooltips from "../tooltips";
 import { getHTMLElement } from "../utils";
 import * as chat from "./chat";
 import { HanabiUI } from "./ui/HanabiUI";
+import { initResearchRestartModal } from "./ui/researchRestartModal";
 
 const lobbyChatText = getHTMLElement("#lobby-chat-text");
 
@@ -18,6 +19,13 @@ export function init(): void {
     if (globals.currentScreen === Screen.Game && globals.ui !== null) {
       globals.ui.focusLost();
     }
+  });
+
+  initResearchRestartModal((restartKind) => {
+    globals.conn!.send("researchRestart", {
+      tableID: globals.tableID,
+      restartKind,
+    });
   });
 }
 
