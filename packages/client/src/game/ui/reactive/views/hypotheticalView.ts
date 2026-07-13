@@ -3,6 +3,7 @@ import { globals } from "../../UIGlobals";
 import * as clues from "../../clues";
 import type { PlayerButton } from "../../controls/PlayerButton";
 import { changeStartingHandVisibility } from "../../hypothetical";
+import { shouldShowLegacyRestart } from "../../researchSingleGameControls";
 import * as turn from "../../turn";
 
 // For replay leaders, we want to disable entering a hypothetical during certain situations.
@@ -109,7 +110,12 @@ export function onActiveOrAmLeaderChanged(data: {
 
   const visibleForLeaderInSharedReplay =
     !data.active && data.sharedReplay && data.amLeader;
-  globals.elements.restartButton?.visible(visibleForLeaderInSharedReplay);
+  globals.elements.restartButton?.visible(
+    shouldShowLegacyRestart({
+      persistentSingleGame: globals.researchPersistentSingleGame,
+      otherwiseVisible: visibleForLeaderInSharedReplay,
+    }),
+  );
 
   globals.layers.UI.batchDraw();
 }

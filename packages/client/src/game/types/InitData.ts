@@ -31,4 +31,8 @@ export interface InitData {
   readonly paused: boolean;
   readonly pausePlayerIndex: PlayerIndex;
   readonly pauseQueued: boolean;
+
+  // Persistent localhost research run controls.
+  readonly researchPersistentSingleGame: boolean;
+  readonly researchRestartController: boolean;
 }

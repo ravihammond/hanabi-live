@@ -2,9 +2,18 @@ import * as chat from "../../chat";
 import { setBrowserAddressBarPath } from "../../utils";
 import { globals } from "./UIGlobals";
 import * as konvaTooltips from "./konvaTooltips";
+import { canNavigateToLobby } from "./researchSingleGameControls";
 import * as timer from "./timer";
 
 export function backToLobby(): void {
+  if (
+    !canNavigateToLobby({
+      persistentSingleGame: globals.researchPersistentSingleGame,
+    })
+  ) {
+    return;
+  }
+
   // Hide the tooltip, if showing.
   konvaTooltips.resetActiveHover();
 

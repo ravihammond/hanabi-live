@@ -67,7 +67,8 @@ type CommandData struct {
 	Inactive bool `json:"inactive"`
 
 	// restart
-	HidePregame bool `json:"hidePregame"`
+	HidePregame bool   `json:"hidePregame"`
+	RestartKind string `json:"restartKind"`
 
 	// Used internally
 	// (a tag of "-" means that the JSON encoder will ignore the field)
@@ -116,6 +117,7 @@ func commandInit() {
 	commandMap["tableVoteForTermination"] = commandTableVoteForTermination
 	commandMap["tableSpectate"] = commandTableSpectate
 	commandMap["tableRestart"] = commandTableRestart
+	commandMap["researchRestart"] = commandResearchRestart
 	commandMap["tableUpdate"] = commandTableUpdate
 	commandMap["tableSuggest"] = commandTableSuggest
 

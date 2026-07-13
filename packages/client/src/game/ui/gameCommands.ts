@@ -171,6 +171,8 @@ gameCommands.set("hypoStart", () => {
 });
 
 gameCommands.set("init", (metadata: InitData) => {
+  globals.researchPersistentSingleGame = metadata.researchPersistentSingleGame;
+  globals.researchRestartController = metadata.researchRestartController;
   setURL(metadata);
   initStateStore(metadata);
 

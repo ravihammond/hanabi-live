@@ -48,6 +48,7 @@ export class Elements {
   replayButton: Button | null = null;
   chatButton: Button | null = null;
   lobbyButton: Button | null = null;
+  newGameButton: Button | null = null;
   restartButton: Button | null = null;
   deck: Deck | null = null;
   gameIDLabel: FitText | null = null;

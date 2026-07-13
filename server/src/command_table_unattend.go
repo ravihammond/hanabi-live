@@ -29,6 +29,10 @@ func commandTableUnattend(ctx context.Context, s *Session, d *CommandData) {
 	if !d.NoTableLock {
 		defer t.Unlock(ctx)
 	}
+	if t.ExtraOptions != nil && t.ExtraOptions.ResearchPersistentSingleGame {
+		s.Warning("Persistent Single Game participants cannot return to the lobby.")
+		return
+	}
 
 	// Validate that they are either playing or spectating the game
 	playerIndex := t.GetPlayerIndexFromID(s.UserID)

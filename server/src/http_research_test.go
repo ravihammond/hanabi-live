@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,214 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
+
+func TestSingleGameRestartControllerRequestAppearsInStatus(t *testing.T) {
+	researchTestInit(t)
+	commandInit()
+	router := researchTestRouter()
+	payload := researchSingleGamePayload()
+
+	response := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/single-game",
+		payload,
+		"secret",
+	)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	}
+	var created CreatedResearchSingleGame
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to parse creation response: %v", err)
+	}
+
+	token := path.Base(created.JoinLinks["roster_player_0"])
+	join := researchJoinTokens[token]
+	controller := NewFakeSession(join.UserID, join.Username)
+	researchHandleGuestConnected(controller)
+	commandResearchRestart(context.Background(), controller, &CommandData{
+		TableID:     created.TableID,
+		RestartKind: "same_seed",
+	})
+
+	statusResponse := researchJSONRequest(
+		t,
+		router,
+		http.MethodGet,
+		"/research/sessions/"+created.GameID+"/status",
+		nil,
+		"secret",
+	)
+	if statusResponse.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", statusResponse.Code, statusResponse.Body.String())
+	}
+	var status map[string]interface{}
+	if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil {
+		t.Fatalf("failed to parse status response: %v", err)
+	}
+	request, ok := status["restart_request"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected pending restart request, got %#v", status["restart_request"])
+	}
+	if request["request_id"] != float64(1) || request["kind"] != "same_seed" {
+		t.Fatalf("unexpected restart request: %#v", request)
+	}
+	if status["current_game_index"] != float64(2) || status["game_seed"] != float64(102) {
+		t.Fatalf("expected current index/seed 2/102, got %#v", status)
+	}
+}
+
+func TestSingleGameAttendanceLockRejectsPlayerUnattend(t *testing.T) {
+	researchTestInit(t)
+	router := researchTestRouter()
+	response := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/single-game",
+		researchSingleGamePayload(),
+		"secret",
+	)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	}
+	var created CreatedResearchSingleGame
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to parse creation response: %v", err)
+	}
+
+	token := path.Base(created.JoinLinks["roster_player_0"])
+	join := researchJoinTokens[token]
+	playerSession := NewFakeSession(join.UserID, join.Username)
+	researchHandleGuestConnected(playerSession)
+	commandTableUnattend(context.Background(), playerSession, &CommandData{
+		TableID: created.TableID,
+	})
+
+	if playerSession.Status() != StatusPlaying || playerSession.TableID() != created.TableID {
+		t.Fatalf(
+			"attendance lock should keep status/table playing/%d, got %d/%d",
+			created.TableID,
+			playerSession.Status(),
+			playerSession.TableID(),
+		)
+	}
+	table, ok := tables.Get(created.TableID, true)
+	if !ok {
+		t.Fatalf("created table %d does not exist", created.TableID)
+	}
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	playerIndex := table.GetPlayerIndexFromID(playerSession.UserID)
+	if playerIndex == -1 || table.Players[playerIndex].Session != playerSession {
+		t.Fatal("attendance lock should keep the Single Game player attached to the table")
+	}
+}
+
+func TestSingleGameRestartRequestTransitionsSameTableExactlyOnce(t *testing.T) {
+	researchTestInit(t)
+	commandInit()
+	router := researchTestRouter()
+	payload := researchSingleGamePayload()
+
+	response := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/single-game",
+		payload,
+		"secret",
+	)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	}
+	var created CreatedResearchSingleGame
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to parse creation response: %v", err)
+	}
+	token := path.Base(created.JoinLinks["roster_player_0"])
+	join := researchJoinTokens[token]
+	controller := NewFakeSession(join.UserID, join.Username)
+	researchHandleGuestConnected(controller)
+
+	table, ok := tables.Get(created.TableID, true)
+	if !ok {
+		t.Fatalf("created table %d does not exist", created.TableID)
+	}
+	table.Lock(nil)
+	oldGame := table.Game
+	table.Unlock(nil)
+	commandResearchRestart(context.Background(), controller, &CommandData{
+		TableID:     created.TableID,
+		RestartKind: "next_game",
+	})
+
+	nextLayout := ResearchSeededInitialLayout{
+		DeckOrder: researchValidDeck(),
+		SeatOrder: []int{0, 1},
+		RosterPlayerToSeatID: map[string]string{
+			"0": "seat_0",
+			"1": "seat_1",
+		},
+	}
+	restartPayload := map[string]interface{}{
+		"request_id":            1,
+		"game_index":            3,
+		"game_seed":             103,
+		"seeded_initial_layout": nextLayout,
+	}
+	restartResponse := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/sessions/"+created.GameID+"/restart",
+		restartPayload,
+		"secret",
+	)
+	if restartResponse.Code != http.StatusOK {
+		t.Fatalf("expected restart 200, got %d: %s", restartResponse.Code, restartResponse.Body.String())
+	}
+	var status map[string]interface{}
+	if err := json.Unmarshal(restartResponse.Body.Bytes(), &status); err != nil {
+		t.Fatalf("failed to parse restart response: %v", err)
+	}
+	if status["current_game_index"] != float64(3) || status["game_seed"] != float64(103) {
+		t.Fatalf("expected next index/seed 3/103, got %#v", status)
+	}
+	if status["restart_request"] != nil {
+		t.Fatalf("expected request to be acknowledged, got %#v", status["restart_request"])
+	}
+
+	table, ok = tables.Get(created.TableID, true)
+	if !ok {
+		t.Fatalf("original table %d disappeared", created.TableID)
+	}
+	table.Lock(nil)
+	if table.Game == oldGame || table.Game.Seed != "103" {
+		t.Fatalf("expected a fresh game for seed 103, got %#v", table.Game)
+	}
+	if table.Players[0].UserID != join.UserID {
+		t.Fatalf("expected controller identity to move to seat 0, got players %#v", table.Players)
+	}
+	table.Unlock(nil)
+	if path.Base(created.JoinLinks["roster_player_0"]) != token {
+		t.Fatal("restart changed the controller join link")
+	}
+
+	replayedResponse := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/sessions/"+created.GameID+"/restart",
+		restartPayload,
+		"secret",
+	)
+	if replayedResponse.Code != http.StatusConflict {
+		t.Fatalf("expected consumed request to return 409, got %d: %s", replayedResponse.Code, replayedResponse.Body.String())
+	}
+}
 
 func TestResearchControlAPIRejectsInvalidDeckOrder(t *testing.T) {
 	researchTestInit(t)

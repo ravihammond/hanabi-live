@@ -143,6 +143,10 @@ func getGameInfo1(s *Session, t *Table, playerIndex int, spectatorIndex int) {
 		Paused           bool `json:"paused"`
 		PausePlayerIndex int  `json:"pausePlayerIndex"`
 		PauseQueued      bool `json:"pauseQueued"`
+
+		// Persistent localhost research run controls.
+		ResearchPersistentSingleGame bool `json:"researchPersistentSingleGame"`
+		ResearchRestartController    bool `json:"researchRestartController"`
 	}
 
 	s.Emit("init", &InitMessage{
@@ -176,5 +180,9 @@ func getGameInfo1(s *Session, t *Table, playerIndex int, spectatorIndex int) {
 		Paused:           g.Paused,
 		PausePlayerIndex: g.PausePlayerIndex,
 		PauseQueued:      pauseQueued,
+
+		ResearchPersistentSingleGame: t.ExtraOptions.ResearchPersistentSingleGame,
+		ResearchRestartController: t.ExtraOptions.ResearchPersistentSingleGame &&
+			s.UserID == t.ExtraOptions.ResearchRestartControllerID,
 	})
 }

@@ -6,6 +6,7 @@ import { globals } from "../../UIGlobals";
 import * as konvaTooltips from "../../konvaTooltips";
 import * as ourHand from "../../ourHand";
 import * as replay from "../../replay";
+import { shouldShowLegacyRestart } from "../../researchSingleGameControls";
 import * as timer from "../../timer";
 import { toggleZen } from "../../zen";
 import * as cluesView from "./cluesView";
@@ -284,7 +285,12 @@ export function onSharedLeaderChanged(
 
 export function onSharedAmLeaderChanged(amLeader: boolean): void {
   globals.elements.sharedReplayLeaderCircle?.visible(amLeader);
-  globals.elements.restartButton?.visible(amLeader);
+  globals.elements.restartButton?.visible(
+    shouldShowLegacyRestart({
+      persistentSingleGame: globals.researchPersistentSingleGame,
+      otherwiseVisible: amLeader,
+    }),
+  );
   globals.elements.enterHypoButton?.visible(amLeader);
 
   // Arrange the buttons in the center of the screen in a certain way depending on whether we are

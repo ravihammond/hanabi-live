@@ -100,6 +100,9 @@ export class UIGlobals {
 
   isResizing = false;
 
+  researchPersistentSingleGame = false;
+  researchRestartController = false;
+
   // State information
   store: Redux.Store<State, Action> | null = null;
   stateObserver: StateObserver | null = null;
@@ -165,6 +168,8 @@ export class UIGlobals {
     this.UIClickTime = 0;
     this.globalEmpathyEnabled = false;
     this.isResizing = false;
+    this.researchPersistentSingleGame = false;
+    this.researchRestartController = false;
 
     this.stateObserver?.unregisterObservers();
     this.stateObserver = null;

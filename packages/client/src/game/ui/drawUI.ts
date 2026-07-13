@@ -58,6 +58,11 @@ import { getCardOrStackBase } from "./getCardOrStackBase";
 import * as hypothetical from "./hypothetical";
 import { initKonvaTooltips } from "./konvaTooltips";
 import * as replay from "./replay";
+import { createResearchRestartModal } from "./researchRestartModal";
+import {
+  canNavigateToLobby,
+  singleGameBottomLeftControls,
+} from "./researchSingleGameControls";
 import * as stats from "./stats";
 import * as timer from "./timer";
 import { toggleZen } from "./zen";
@@ -522,6 +527,10 @@ function drawBottomLeftButtons() {
     w: 0.07,
     h: 0.0563,
   };
+  const controls = singleGameBottomLeftControls({
+    persistentSingleGame: globals.researchPersistentSingleGame,
+    restartController: globals.researchRestartController,
+  });
 
   // The toggle in-game replay button.
   const replayButton = new Button(
@@ -598,12 +607,37 @@ function drawBottomLeftButtons() {
   initKonvaTooltips(chatButton, true, false);
   globals.elements.chatButton = chatButton;
 
-  // The lobby button (which takes the user back to the lobby).
+  // The third bottom-left control is either persistent Single Game continuation or Lobby.
   const lobbyButtonValues = {
     x: bottomLeftButtonValues.x,
     y: bottomLeftButtonValues.y + 2 * bottomLeftButtonValues.h! + 0.02,
     h: bottomLeftButtonValues.h,
   };
+  if (controls.includes("new_game")) {
+    const newGameButton = new Button({
+      x: lobbyButtonValues.x * winW,
+      y: lobbyButtonValues.y * winH,
+      width: bottomLeftButtonValues.w! * winW,
+      height: lobbyButtonValues.h! * winH,
+      text: "New Game",
+    });
+    globals.layers.UI.add(newGameButton as unknown as Konva.Group);
+    newGameButton.on("click tap", () => {
+      globals.elements.restartArea?.show();
+      globals.layers.UI2.batchDraw();
+    });
+    newGameButton.tooltipName = "new-game";
+    newGameButton.tooltipContent =
+      "Restart this seed or advance this persistent Single Game run to its next game index.";
+    initKonvaTooltips(newGameButton, true, false);
+    globals.elements.newGameButton = newGameButton;
+    return;
+  }
+
+  if (!controls.includes("lobby")) {
+    return;
+  }
+
   const lobbyButton = new Button({
     x: lobbyButtonValues.x * winW,
     y: lobbyButtonValues.y * winH,
@@ -2467,20 +2501,45 @@ function drawPauseArea() {
     globals.game!.chat.toggle();
   });
 
-  const pauseLobbyButton = new Button(
-    {
-      x: (pauseAreaValues.w - button2W - spacing * 1.5) * winW,
-      y: buttonH * winH,
-      width: button2W * winW,
-      height: 0.1 * winH,
-    },
-    [globals.imageLoader!.get("home")],
-  );
-  globals.elements.pauseArea.add(pauseLobbyButton as unknown as Konva.Group);
-  pauseLobbyButton.on("click tap", lobbyButtonClick);
+  if (
+    canNavigateToLobby({
+      persistentSingleGame: globals.researchPersistentSingleGame,
+    })
+  ) {
+    const pauseLobbyButton = new Button(
+      {
+        x: (pauseAreaValues.w - button2W - spacing * 1.5) * winW,
+        y: buttonH * winH,
+        width: button2W * winW,
+        height: 0.1 * winH,
+      },
+      [globals.imageLoader!.get("home")],
+    );
+    globals.elements.pauseArea.add(pauseLobbyButton as unknown as Konva.Group);
+    pauseLobbyButton.on("click tap", lobbyButtonClick);
+  }
 }
 
 function drawRestartArea() {
+  if (globals.researchRestartController) {
+    const width = 0.7 * winW;
+    const height = 0.6 * winH;
+    const restartModal = createResearchRestartModal({
+      width,
+      height,
+      onRestartRequested: (restartKind) => {
+        globals.lobby.conn!.send("researchRestart", {
+          tableID: globals.lobby.tableID,
+          restartKind,
+        });
+      },
+    });
+    restartModal.position({ x: 0.15 * winW, y: 0.2 * winH });
+    globals.elements.restartArea = restartModal;
+    globals.layers.UI2.add(restartModal);
+    return;
+  }
+
   const restartAreaValues = {
     w: 0.7,
     h: 0.6,

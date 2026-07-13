@@ -30,6 +30,7 @@ export function show(): void {
   $("#game").fadeIn(FADE_TIME_MS);
 
   // Every time a new game is opened, the UI is rebuilt from scratch.
+  globals.ui?.destroy();
   globals.ui = new HanabiUI(globals, gameExports);
   globals.chatUnread = 0;
 

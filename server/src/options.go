@@ -59,6 +59,8 @@ type ExtraOptions struct {
 	ResearchGameSeed             string
 	ResearchSeatOrder            []int
 	ResearchRosterPlayerToSeatID map[string]string
+	ResearchPersistentSingleGame bool
+	ResearchRestartControllerID  int
 }
 
 // To minimize JSON output, we need to use pointers to each option instead of the normal type

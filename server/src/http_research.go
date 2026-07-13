@@ -121,6 +121,16 @@ type ResearchSession struct {
 	RosterPlayerIDsBySeat   []string
 	RosterPlayerNamesBySeat []string
 	BotRosterPlayerIDs      map[string]bool
+	RestartControllerUserID int
+	PendingRestartRequest   *ResearchRestartRequest
+	NextRestartRequestID    int
+	RosterPlayers           []ResearchRosterPlayer
+	IdentityDisplay         string
+}
+
+type ResearchRestartRequest struct {
+	RequestID int    `json:"request_id"`
+	Kind      string `json:"kind"`
 }
 
 type ResearchJoinToken struct {
@@ -157,6 +167,7 @@ func registerResearchRoutes(router *gin.Engine) {
 	router.POST("/research/pregame-table", researchCreatePregameTable)
 	router.POST("/research/replay/open", researchOpenReplay)
 	router.POST("/research/sessions/:gameID/current-game-layout", researchUpdateCurrentGameLayout)
+	router.POST("/research/sessions/:gameID/restart", researchRestartSingleGame)
 	router.GET("/research/sessions/:gameID/status", researchGetSessionStatus)
 	router.POST("/research/sessions/:gameID/bot-action", researchPostBotAction)
 	router.POST("/research/sessions/:gameID/bot-join-session", researchCreateBotJoinSession)
@@ -263,6 +274,11 @@ func researchCreateSingleGame(c *gin.Context) {
 		RosterPlayerIDsBySeat:   rosterPlayerIDsBySeat,
 		RosterPlayerNamesBySeat: rosterPlayerNamesBySeat,
 		BotRosterPlayerIDs:      botRosterPlayerIDs,
+		Seed:                    payload.Game.Seed,
+		CurrentGameIndex:        payload.Game.GameIndex,
+		RestartControllerUserID: researchRestartControllerUserID(table, payload, layout),
+		RosterPlayers:           append([]ResearchRosterPlayer(nil), payload.RosterPlayers...),
+		IdentityDisplay:         payload.Game.IdentityDisplay,
 	}
 	researchSessionsMutex.Unlock()
 	c.JSON(http.StatusCreated, created)
@@ -422,6 +438,159 @@ func researchUpdateCurrentGameLayout(c *gin.Context) {
 	status := researchSessionStatus(session)
 	researchSessionsMutex.Unlock()
 	c.JSON(http.StatusOK, status)
+}
+
+func researchRestartSingleGame(c *gin.Context) {
+	if !researchRequireAdminToken(c) {
+		return
+	}
+
+	var payload struct {
+		RequestID           int                         `json:"request_id"`
+		GameIndex           int                         `json:"game_index"`
+		GameSeed            *int                        `json:"game_seed"`
+		SeededInitialLayout ResearchSeededInitialLayout `json:"seeded_initial_layout"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
+		return
+	}
+
+	gameID := c.Param("gameID")
+	researchSessionsMutex.Lock()
+	session, ok := researchSessions[gameID]
+	if !ok {
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusNotFound, gin.H{"detail": "Session is not valid."})
+		return
+	}
+	if session.Mode != "single_game" {
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"detail": "Session is not a persistent Single Game run."})
+		return
+	}
+	request := session.PendingRestartRequest
+	if request == nil || request.RequestID != payload.RequestID {
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"detail": "Restart request is not pending."})
+		return
+	}
+
+	expectedGameIndex := session.CurrentGameIndex
+	if request.Kind == researchRestartNextGame {
+		expectedGameIndex++
+	}
+	expectedGameSeed := session.Seed + expectedGameIndex
+	if payload.GameIndex != expectedGameIndex {
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"detail": "Restart game_index does not match the requested transition."})
+		return
+	}
+	if payload.GameSeed == nil || *payload.GameSeed != expectedGameSeed {
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"detail": "Restart game_seed must equal seed + game_index."})
+		return
+	}
+	layout, err := validateResearchLayout(payload.SeededInitialLayout, len(session.RosterPlayers))
+	if err != nil {
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
+		return
+	}
+
+	ctx := context.Background()
+	table, ok := tables.Get(session.TableID, true)
+	if !ok {
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"detail": "Single Game table no longer exists."})
+		return
+	}
+	table.Lock(ctx)
+	if err := researchApplyRestartLayout(table, session, layout, expectedGameSeed); err != nil {
+		table.Unlock(ctx)
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"detail": err.Error()})
+		return
+	}
+	session.CurrentGameIndex = expectedGameIndex
+	session.SeatOrder = append([]int(nil), layout.seatOrder...)
+	session.RosterPlayerToSeatID = copyStringMap(layout.rosterPlayerToSeatID)
+	session.RosterPlayerIDsBySeat = researchRosterPlayerIDsBySeat(session.RosterPlayers, layout.seatOrder)
+	session.RosterPlayerNamesBySeat = researchRosterPlayerNamesBySeat(
+		session.RosterPlayers,
+		layout.seatOrder,
+		session.IdentityDisplay,
+	)
+	researchUpdateJoinTokensForLayout(session)
+	session.PendingRestartRequest = nil
+	starter := table.Players[0].Session
+	tableStart(ctx, starter, &CommandData{
+		TableID:      table.ID,
+		NoTableLock:  true,
+		NoTablesLock: true,
+	}, table)
+	table.Unlock(ctx)
+	researchSessionsMutex.Unlock()
+
+	c.JSON(http.StatusOK, researchSessionStatus(session))
+}
+
+func researchApplyRestartLayout(
+	table *Table,
+	session *ResearchSession,
+	layout *validatedResearchLayout,
+	gameSeed int,
+) error {
+	playersByRosterPlayerID := make(map[string]*Player, len(table.Players))
+	for seatIndex, rosterPlayerID := range session.RosterPlayerIDsBySeat {
+		if seatIndex < len(table.Players) {
+			playersByRosterPlayerID[rosterPlayerID] = table.Players[seatIndex]
+		}
+	}
+	rosterPlayerIDsBySeat := researchRosterPlayerIDsBySeat(session.RosterPlayers, layout.seatOrder)
+	rosterPlayerNamesBySeat := researchRosterPlayerNamesBySeat(
+		session.RosterPlayers,
+		layout.seatOrder,
+		session.IdentityDisplay,
+	)
+	nextPlayers := make([]*Player, len(rosterPlayerIDsBySeat))
+	for seatIndex, rosterPlayerID := range rosterPlayerIDsBySeat {
+		player, ok := playersByRosterPlayerID[rosterPlayerID]
+		if !ok {
+			return fmt.Errorf("Roster Player %q is not assigned to the current table.", rosterPlayerID)
+		}
+		player.Name = rosterPlayerNamesBySeat[seatIndex]
+		if player.Session != nil {
+			player.Session.Username = player.Name
+		}
+		nextPlayers[seatIndex] = player
+	}
+	table.Players = nextPlayers
+	table.OwnerID = nextPlayers[0].UserID
+	table.OwnerUsername = nextPlayers[0].Name
+	table.Running = false
+	table.Replay = false
+	table.ExtraOptions.CustomDeck = layout.deckOrder
+	table.ExtraOptions.ResearchGameSeed = strconv.Itoa(gameSeed)
+	table.ExtraOptions.ResearchSeatOrder = append([]int(nil), layout.seatOrder...)
+	table.ExtraOptions.ResearchRosterPlayerToSeatID = copyStringMap(layout.rosterPlayerToSeatID)
+	return nil
+}
+
+func researchUpdateJoinTokensForLayout(session *ResearchSession) {
+	for _, join := range researchJoinTokens {
+		if join.GameID != session.GameID {
+			continue
+		}
+		for seatIndex, rosterPlayerID := range session.RosterPlayerIDsBySeat {
+			if rosterPlayerID != join.RosterPlayerID {
+				continue
+			}
+			join.SeatIndex = seatIndex
+			join.Username = session.RosterPlayerNamesBySeat[seatIndex]
+			break
+		}
+	}
 }
 
 func researchGetSessionStatus(c *gin.Context) {
@@ -810,6 +979,10 @@ func createResearchSingleGameTable(payload ResearchCreatePayload, layout *valida
 	}
 	table.OwnerID = table.Players[0].UserID
 	table.OwnerUsername = table.Players[0].Name
+	if payload.Mode == "single_game" {
+		table.ExtraOptions.ResearchPersistentSingleGame = true
+		table.ExtraOptions.ResearchRestartControllerID = researchRestartControllerUserID(table, payload, layout)
+	}
 	tables.Set(table.ID, table)
 	return table, nil
 }
@@ -981,8 +1154,31 @@ func researchSessionStatus(session *ResearchSession) gin.H {
 		status["ready_status"] = session.ReadyStatus
 		status["active_game_started"] = false
 		status["completed_games"] = session.CompletedGames
+	} else if session.Mode == "single_game" {
+		status["current_game_index"] = session.CurrentGameIndex
+		status["game_seed"] = session.Seed + session.CurrentGameIndex
+		status["restart_request"] = session.PendingRestartRequest
 	}
 	return status
+}
+
+func researchRestartControllerUserID(
+	table *Table,
+	payload ResearchCreatePayload,
+	layout *validatedResearchLayout,
+) int {
+	controllerRosterIndex := -1
+	for _, player := range payload.RosterPlayers {
+		if player.Type == "human" && (controllerRosterIndex < 0 || player.RosterIndex < controllerRosterIndex) {
+			controllerRosterIndex = player.RosterIndex
+		}
+	}
+	for seatIndex, rosterIndex := range layout.seatOrder {
+		if rosterIndex == controllerRosterIndex {
+			return table.Players[seatIndex].UserID
+		}
+	}
+	return 0
 }
 
 func researchAttachTableStatus(status gin.H, session *ResearchSession) {
