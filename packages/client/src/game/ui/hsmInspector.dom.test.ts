@@ -155,4 +155,96 @@ describe("native HSM inspector", () => {
       "9 → 12",
     );
   });
+
+  test("applies the selected card-label presentation", () => {
+    const send = jest.fn();
+    initHSMInspector(
+      {
+        capability: "own_perspective",
+        identity: "alice",
+        ownPerspective: 0,
+        playerNames: ["Alice", "Bob"],
+        physicalTruthAllowed: false,
+      },
+      send,
+    );
+    handleHSMSnapshot({
+      requestID: 1,
+      snapshot: {
+        targetBoundary: 0,
+        evidenceBoundary: 0,
+        perspectivePlayer: 0,
+        actionTimeClassification: null,
+        diagnosticInterpretation: "neutral",
+        cards: [
+          {
+            stableCardID: 12,
+            summary: "Ready Play",
+            notes: ["Play Ready"],
+          },
+        ],
+        legalActions: [],
+        ruleRows: [],
+        relaxedSources: [],
+        solver: {},
+        capacity: {},
+        plainText: "[hsm] exact",
+      },
+    });
+
+    const labels = document.querySelector<HTMLSelectElement>(
+      "#hsm-debug-card-labels",
+    )!;
+    labels.value = "summary";
+    labels.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(document.querySelector(".hsm-debug-card-badge")).toBeNull();
+    expect(
+      document.querySelector(".hsm-debug-card-summary")?.textContent,
+    ).toContain("Ready Play");
+
+    labels.value = "off";
+    labels.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(document.querySelector(".hsm-debug-card-summary")).toBeNull();
+    expect(document.querySelector("#hsm-debug-drawer")?.textContent).toContain(
+      "Card labels are hidden",
+    );
+  });
+
+  test("rejects a late Physical Truth response after the overlay is disabled", () => {
+    const send = jest.fn();
+    initHSMInspector(
+      {
+        capability: "switchable",
+        identity: "hsm_debug_spectator",
+        ownPerspective: 0,
+        playerNames: ["Alice", "Bob"],
+        physicalTruthAllowed: true,
+      },
+      send,
+    );
+
+    handleHSMSnapshot({
+      requestID: 1,
+      snapshot: {
+        targetBoundary: 0,
+        evidenceBoundary: 0,
+        perspectivePlayer: 0,
+        actionTimeClassification: null,
+        diagnosticInterpretation: "neutral",
+        cards: [],
+        legalActions: [],
+        ruleRows: [],
+        relaxedSources: [],
+        solver: {},
+        capacity: {},
+        plainText: "[hsm] exact",
+        physicalTruth: { cards: [{ stableCardID: 1, identity: 4 }] },
+      },
+    });
+
+    expect(
+      document.querySelector(".hsm-debug-physical-truth-panel"),
+    ).toBeNull();
+    expect(document.querySelector("#hsm-debug-loading")).not.toBeNull();
+  });
 });

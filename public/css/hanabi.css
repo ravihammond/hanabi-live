@@ -22,7 +22,9 @@
 #hsm-debug-root {
   --hsm-drawer-width: min(390px, 38vw);
   color: #e8edf0;
-  font: 13px/1.4 Verdana, sans-serif;
+  font:
+    13px/1.4 Verdana,
+    sans-serif;
 }
 
 body.hsm-debug-authorized {
@@ -188,6 +190,12 @@ body.hsm-debug-authorized {
   border-radius: 999px;
   background: #1b2c33;
   color: #e8f2f5;
+}
+
+.hsm-debug-card-summary {
+  padding: 5px 7px;
+  border-bottom: 1px dotted #78909a;
+  color: #cbd8dd;
 }
 
 .hsm-debug-card-badge[aria-pressed="true"] {

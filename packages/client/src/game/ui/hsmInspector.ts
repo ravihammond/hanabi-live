@@ -169,6 +169,7 @@ export function handleHSMSnapshot(message: HSMSnapshotMessage): void {
     || snapshot.evidenceBoundary !== state.evidenceBoundary
     || (snapshot.perspectivePlayer !== undefined
       && snapshot.perspectivePlayer !== state.perspectivePlayer)
+    || (snapshot.physicalTruth !== undefined) !== state.physicalTruth
   ) {
     return;
   }
@@ -456,10 +457,23 @@ function buildCards(cards: readonly Record<string, unknown>[]): HTMLElement {
     section.append(textElement("p", "No valid cards at this boundary"));
     return section;
   }
+  if (state?.cardLabels === "off") {
+    section.append(textElement("p", "Card labels are hidden"));
+    return section;
+  }
   const badges = element("div", "hsm-debug-card-badges");
   for (const card of cards) {
     const stableCardID = Number(card["stableCardID"]);
     const summary = String(card["summary"] ?? "No HSM note");
+    if (state?.cardLabels === "summary") {
+      const cardSummary = textElement("span", `#${stableCardID} · ${summary}`);
+      cardSummary.className = "hsm-debug-card-summary";
+      cardSummary.title = Array.isArray(card["notes"])
+        ? (card["notes"] as unknown[]).join(" · ")
+        : summary;
+      badges.append(cardSummary);
+      continue;
+    }
     const badge = button(`#${stableCardID} · ${summary}`, "", () => {
       if (state === null) {
         return;
