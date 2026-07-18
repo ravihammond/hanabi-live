@@ -70,6 +70,13 @@ type CommandData struct {
 	HidePregame bool   `json:"hidePregame"`
 	RestartKind string `json:"restartKind"`
 
+	// Read-only temporal HSM inspection.
+	HSMTargetBoundary    int  `json:"targetBoundary"`
+	HSMEvidenceBoundary  int  `json:"evidenceBoundary"`
+	HSMPerspectivePlayer int  `json:"perspectivePlayer"`
+	HSMActorPlayer       int  `json:"actorPlayer"`
+	HSMPhysicalTruth     bool `json:"physicalTruth"`
+
 	// Used internally
 	// (a tag of "-" means that the JSON encoder will ignore the field)
 	Username string `json:"-"` // Used to mark the username of a chat message
@@ -118,6 +125,7 @@ func commandInit() {
 	commandMap["tableSpectate"] = commandTableSpectate
 	commandMap["tableRestart"] = commandTableRestart
 	commandMap["researchRestart"] = commandResearchRestart
+	commandMap["researchHSMRequest"] = commandResearchHSMRequest
 	commandMap["tableUpdate"] = commandTableUpdate
 	commandMap["tableSuggest"] = commandTableSuggest
 

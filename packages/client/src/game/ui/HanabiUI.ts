@@ -7,6 +7,11 @@ import * as tooltips from "../../tooltips";
 import type { GameExports } from "../main";
 import * as cursor from "./cursor";
 import { drawUI } from "./drawUI";
+import {
+  destroyHSMInspector,
+  getHSMInspectorReservedWidth,
+  getHSMToolbarReservedHeight,
+} from "./hsmInspector";
 import * as keyboard from "./keyboard";
 import * as cardsView from "./reactive/views/cardsView";
 import * as cluesView from "./reactive/views/cluesView";
@@ -100,6 +105,10 @@ export class HanabiUI {
     globals.layers.UI.batchDraw();
   }
 
+  applyHSMReservedLayout(): void {
+    initStageSize();
+  }
+
   // eslint-disable-next-line @typescript-eslint/class-methods-use-this
   focusLost(): void {
     setGlobalEmpathy(false);
@@ -114,6 +123,7 @@ export class HanabiUI {
     }
     keyboard.destroy();
     timer.stop();
+    destroyHSMInspector();
     globals.stage.destroy();
   }
 
@@ -216,8 +226,8 @@ function getStageSize(
 ): { width: number; height: number } {
   const ratio = 16 / 9;
 
-  let ww = windowWidth;
-  let wh = windowHeight;
+  let ww = windowWidth - getHSMInspectorReservedWidth();
+  let wh = windowHeight - getHSMToolbarReservedHeight();
 
   if (ww < 240) {
     // The stage seems to break for widths of around 235 px or less.

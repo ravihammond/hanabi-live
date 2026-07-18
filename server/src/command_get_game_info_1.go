@@ -113,6 +113,7 @@ func getGameInfo1(s *Session, t *Table, playerIndex int, spectatorIndex int) {
 	if playerIndex != -1 {
 		pauseQueued = g.Players[playerIndex].RequestedPause
 	}
+	hsmDebug := researchHSMDebugInitForUser(s.UserID)
 
 	type InitMessage struct {
 		// Game settings
@@ -145,8 +146,9 @@ func getGameInfo1(s *Session, t *Table, playerIndex int, spectatorIndex int) {
 		PauseQueued      bool `json:"pauseQueued"`
 
 		// Persistent localhost research run controls.
-		ResearchPersistentSingleGame bool `json:"researchPersistentSingleGame"`
-		ResearchRestartController    bool `json:"researchRestartController"`
+		ResearchPersistentSingleGame bool                  `json:"researchPersistentSingleGame"`
+		ResearchRestartController    bool                  `json:"researchRestartController"`
+		HSMDebug                     *ResearchHSMDebugInit `json:"hsmDebug,omitempty"`
 	}
 
 	s.Emit("init", &InitMessage{
@@ -184,5 +186,6 @@ func getGameInfo1(s *Session, t *Table, playerIndex int, spectatorIndex int) {
 		ResearchPersistentSingleGame: t.ExtraOptions.ResearchPersistentSingleGame,
 		ResearchRestartController: t.ExtraOptions.ResearchPersistentSingleGame &&
 			s.UserID == t.ExtraOptions.ResearchRestartControllerID,
+		HSMDebug: hsmDebug,
 	})
 }

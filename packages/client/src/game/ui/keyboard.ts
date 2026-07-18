@@ -24,6 +24,7 @@ import { globals } from "./UIGlobals";
 import { backToLobby } from "./backToLobby";
 import { checkMisplay } from "./checkMisplay";
 import * as clues from "./clues";
+import { isHSMInspectionReadOnly } from "./hsmInspector";
 import * as hypothetical from "./hypothetical";
 import * as replay from "./replay";
 import { setGlobalEmpathy } from "./setGlobalEmpathy";
@@ -469,6 +470,9 @@ function performAction(
   actionType: ActionType.Play | ActionType.Discard,
   target: CardOrder,
 ) {
+  if (isHSMInspectionReadOnly()) {
+    return;
+  }
   if (actionType === ActionType.Play) {
     const card = globals.deck[target];
     if (card !== undefined && checkMisplay(card.state)) {

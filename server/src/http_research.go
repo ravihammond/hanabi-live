@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,12 +55,18 @@ type ResearchGamePayload struct {
 }
 
 type ResearchRosterPlayer struct {
-	RosterIndex    int    `json:"roster_index"`
-	RosterPlayerID string `json:"roster_player_id"`
-	Type           string `json:"type"`
-	Location       string `json:"location,omitempty"`
-	DisplayName    string `json:"display_name,omitempty"`
-	ModelPath      string `json:"model_path,omitempty"`
+	RosterIndex        int    `json:"roster_index"`
+	RosterPlayerID     string `json:"roster_player_id"`
+	Type               string `json:"type"`
+	Location           string `json:"location,omitempty"`
+	DisplayName        string `json:"display_name,omitempty"`
+	ModelPath          string `json:"model_path,omitempty"`
+	HSMDebugCapability string `json:"hsm_debug_capability,omitempty"`
+}
+
+type ResearchHSMDebugSpectator struct {
+	Identity   string `json:"identity"`
+	Capability string `json:"capability"`
 }
 
 type ResearchCreatePayload struct {
@@ -67,6 +74,7 @@ type ResearchCreatePayload struct {
 	Game                ResearchGamePayload         `json:"game"`
 	RosterPlayers       []ResearchRosterPlayer      `json:"roster_players"`
 	SeededInitialLayout ResearchSeededInitialLayout `json:"seeded_initial_layout"`
+	HSMDebugSpectator   *ResearchHSMDebugSpectator  `json:"hsm_debug_spectator,omitempty"`
 }
 
 type CreatedResearchSingleGame struct {
@@ -109,23 +117,28 @@ type OpenedResearchReplay struct {
 }
 
 type ResearchSession struct {
-	GameID                  string
-	TableID                 uint64
-	Mode                    string
-	Seed                    int
-	CurrentGameIndex        int
-	ReadyStatus             map[string]bool
-	CompletedGames          []map[string]interface{}
-	SeatOrder               []int
-	RosterPlayerToSeatID    map[string]string
-	RosterPlayerIDsBySeat   []string
-	RosterPlayerNamesBySeat []string
-	BotRosterPlayerIDs      map[string]bool
-	RestartControllerUserID int
-	PendingRestartRequest   *ResearchRestartRequest
-	NextRestartRequestID    int
-	RosterPlayers           []ResearchRosterPlayer
-	IdentityDisplay         string
+	GameID                     string
+	TableID                    uint64
+	Mode                       string
+	Seed                       int
+	CurrentGameIndex           int
+	ReadyStatus                map[string]bool
+	CompletedGames             []map[string]interface{}
+	SeatOrder                  []int
+	RosterPlayerToSeatID       map[string]string
+	RosterPlayerIDsBySeat      []string
+	RosterPlayerNamesBySeat    []string
+	BotRosterPlayerIDs         map[string]bool
+	RestartControllerUserID    int
+	PendingRestartRequest      *ResearchRestartRequest
+	NextRestartRequestID       int
+	RosterPlayers              []ResearchRosterPlayer
+	IdentityDisplay            string
+	PendingHSMSnapshotRequests map[int]*ResearchHSMSnapshotRequest
+	NextHSMSnapshotRequestID   int
+	HSMLegalActionsByBoundary  map[int][]string
+	HSMActorsByBoundary        map[int]int
+	HSMMutex                   sync.Mutex
 }
 
 type ResearchRestartRequest struct {
@@ -134,14 +147,34 @@ type ResearchRestartRequest struct {
 }
 
 type ResearchJoinToken struct {
-	Token          string
-	GameID         string
-	TableID        uint64
-	RosterPlayerID string
-	RosterIndex    int
-	SeatIndex      int
-	UserID         int
-	Username       string
+	Token              string
+	GameID             string
+	TableID            uint64
+	RosterPlayerID     string
+	RosterIndex        int
+	SeatIndex          int
+	UserID             int
+	Username           string
+	HSMIdentity        string
+	HSMDebugCapability string
+}
+
+type ResearchHSMSnapshotRequest struct {
+	RequestID         int      `json:"request_id"`
+	Identity          string   `json:"identity"`
+	TargetBoundary    int      `json:"target_boundary"`
+	EvidenceBoundary  int      `json:"evidence_boundary"`
+	PerspectivePlayer int      `json:"perspective_player"`
+	ActorPlayer       int      `json:"actor_player"`
+	PhysicalTruth     bool     `json:"physical_truth"`
+	Client            *Session `json:"-"`
+}
+
+type ResearchHSMDebugInit struct {
+	Capability           string `json:"capability"`
+	Identity             string `json:"identity"`
+	OwnPerspective       int    `json:"ownPerspective"`
+	PhysicalTruthAllowed bool   `json:"physicalTruthAllowed"`
 }
 
 type ResearchBotActionPayload struct {
@@ -153,6 +186,11 @@ type ResearchBotAction struct {
 	Type   int `json:"type"`
 	Target int `json:"target"`
 	Value  int `json:"value"`
+}
+
+type ResearchHSMSnapshotPublication struct {
+	RequestID int                    `json:"request_id"`
+	Snapshot  map[string]interface{} `json:"snapshot"`
 }
 
 type validatedResearchLayout struct {
@@ -168,6 +206,7 @@ func registerResearchRoutes(router *gin.Engine) {
 	router.POST("/research/replay/open", researchOpenReplay)
 	router.POST("/research/sessions/:gameID/current-game-layout", researchUpdateCurrentGameLayout)
 	router.POST("/research/sessions/:gameID/restart", researchRestartSingleGame)
+	router.POST("/research/sessions/:gameID/hsm-snapshot", researchPublishHSMSnapshot)
 	router.GET("/research/sessions/:gameID/status", researchGetSessionStatus)
 	router.POST("/research/sessions/:gameID/bot-action", researchPostBotAction)
 	router.POST("/research/sessions/:gameID/bot-join-session", researchCreateBotJoinSession)
@@ -266,19 +305,22 @@ func researchCreateSingleGame(c *gin.Context) {
 	}
 	researchSessionsMutex.Lock()
 	researchSessions[gameID] = &ResearchSession{
-		GameID:                  gameID,
-		TableID:                 table.ID,
-		Mode:                    "single_game",
-		SeatOrder:               append([]int(nil), layout.seatOrder...),
-		RosterPlayerToSeatID:    copyStringMap(layout.rosterPlayerToSeatID),
-		RosterPlayerIDsBySeat:   rosterPlayerIDsBySeat,
-		RosterPlayerNamesBySeat: rosterPlayerNamesBySeat,
-		BotRosterPlayerIDs:      botRosterPlayerIDs,
-		Seed:                    payload.Game.Seed,
-		CurrentGameIndex:        payload.Game.GameIndex,
-		RestartControllerUserID: researchRestartControllerUserID(table, payload, layout),
-		RosterPlayers:           append([]ResearchRosterPlayer(nil), payload.RosterPlayers...),
-		IdentityDisplay:         payload.Game.IdentityDisplay,
+		GameID:                     gameID,
+		TableID:                    table.ID,
+		Mode:                       "single_game",
+		SeatOrder:                  append([]int(nil), layout.seatOrder...),
+		RosterPlayerToSeatID:       copyStringMap(layout.rosterPlayerToSeatID),
+		RosterPlayerIDsBySeat:      rosterPlayerIDsBySeat,
+		RosterPlayerNamesBySeat:    rosterPlayerNamesBySeat,
+		BotRosterPlayerIDs:         botRosterPlayerIDs,
+		Seed:                       payload.Game.Seed,
+		CurrentGameIndex:           payload.Game.GameIndex,
+		RestartControllerUserID:    researchRestartControllerUserID(table, payload, layout),
+		RosterPlayers:              append([]ResearchRosterPlayer(nil), payload.RosterPlayers...),
+		IdentityDisplay:            payload.Game.IdentityDisplay,
+		PendingHSMSnapshotRequests: make(map[int]*ResearchHSMSnapshotRequest),
+		HSMLegalActionsByBoundary:  make(map[int][]string),
+		HSMActorsByBoundary:        make(map[int]int),
 	}
 	researchSessionsMutex.Unlock()
 	c.JSON(http.StatusCreated, created)
@@ -523,6 +565,11 @@ func researchRestartSingleGame(c *gin.Context) {
 	)
 	researchUpdateJoinTokensForLayout(session)
 	session.PendingRestartRequest = nil
+	session.HSMMutex.Lock()
+	session.PendingHSMSnapshotRequests = make(map[int]*ResearchHSMSnapshotRequest)
+	session.HSMLegalActionsByBoundary = make(map[int][]string)
+	session.HSMActorsByBoundary = make(map[int]int)
+	session.HSMMutex.Unlock()
 	starter := table.Players[0].Session
 	tableStart(ctx, starter, &CommandData{
 		TableID:      table.ID,
@@ -603,6 +650,41 @@ func researchGetSessionStatus(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, researchSessionStatus(session))
+}
+
+func researchPublishHSMSnapshot(c *gin.Context) {
+	if !researchRequireAdminToken(c) {
+		return
+	}
+	var publication ResearchHSMSnapshotPublication
+	if err := c.ShouldBindJSON(&publication); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
+		return
+	}
+	researchSessionsMutex.Lock()
+	session, ok := researchSessions[c.Param("gameID")]
+	if !ok {
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusNotFound, gin.H{"detail": "Research session is not valid."})
+		return
+	}
+	session.HSMMutex.Lock()
+	request, ok := session.PendingHSMSnapshotRequests[publication.RequestID]
+	if !ok {
+		session.HSMMutex.Unlock()
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusNotFound, gin.H{"detail": "HSM snapshot request is not pending."})
+		return
+	}
+	delete(session.PendingHSMSnapshotRequests, publication.RequestID)
+	session.HSMMutex.Unlock()
+	researchSessionsMutex.Unlock()
+
+	request.Client.Emit("hsmSnapshot", gin.H{
+		"requestID": publication.RequestID,
+		"snapshot":  publication.Snapshot,
+	})
+	c.JSON(http.StatusOK, gin.H{"published": true})
 }
 
 func researchCreateBotJoinSession(c *gin.Context) {
@@ -788,6 +870,25 @@ func researchMagicJoinTokenCredentials(token string) (int, string, bool) {
 		return 0, "", false
 	}
 	return join.UserID, join.Username, true
+}
+
+func researchHSMDebugInitForUser(userID int) *ResearchHSMDebugInit {
+	researchSessionsMutex.Lock()
+	defer researchSessionsMutex.Unlock()
+	join, ok := researchGuestUsers[userID]
+	if !ok || join.HSMDebugCapability == "" || join.HSMDebugCapability == "none" {
+		return nil
+	}
+	ownPerspective := join.SeatIndex
+	if ownPerspective < 0 {
+		ownPerspective = 0
+	}
+	return &ResearchHSMDebugInit{
+		Capability:           join.HSMDebugCapability,
+		Identity:             join.HSMIdentity,
+		OwnPerspective:       ownPerspective,
+		PhysicalTruthAllowed: join.HSMDebugCapability == "switchable",
+	}
 }
 
 func researchSessionForRequest(c *gin.Context) (*ResearchSession, bool) {
@@ -1002,18 +1103,39 @@ func researchRegisterJoinLinks(gameID string, tableID uint64, payload ResearchCr
 		}
 		token := researchNewJoinToken()
 		join := &ResearchJoinToken{
-			Token:          token,
-			GameID:         gameID,
-			TableID:        tableID,
-			RosterPlayerID: player.RosterPlayerID,
-			RosterIndex:    player.RosterIndex,
-			SeatIndex:      seatIndex,
-			UserID:         researchUserIDForTableSeat(tableID, seatIndex),
-			Username:       researchDisplayName(payload.Game.IdentityDisplay, player, seatIndex),
+			Token:              token,
+			GameID:             gameID,
+			TableID:            tableID,
+			RosterPlayerID:     player.RosterPlayerID,
+			RosterIndex:        player.RosterIndex,
+			SeatIndex:          seatIndex,
+			UserID:             researchUserIDForTableSeat(tableID, seatIndex),
+			Username:           researchDisplayName(payload.Game.IdentityDisplay, player, seatIndex),
+			HSMIdentity:        player.RosterPlayerID,
+			HSMDebugCapability: player.HSMDebugCapability,
 		}
 		researchJoinTokens[token] = join
 		researchGuestUsers[join.UserID] = join
 		links[player.RosterPlayerID] = fmt.Sprintf("%s/join/%s", researchPublicBaseURL(), token)
+	}
+	if spectator := payload.HSMDebugSpectator; spectator != nil && spectator.Identity != "" {
+		token := researchNewJoinToken()
+		userID := researchUserIDForTableSeat(tableID, len(layout.seatOrder)+1)
+		join := &ResearchJoinToken{
+			Token:              token,
+			GameID:             gameID,
+			TableID:            tableID,
+			RosterPlayerID:     spectator.Identity,
+			RosterIndex:        -1,
+			SeatIndex:          -1,
+			UserID:             userID,
+			Username:           "HSM Debug Spectator",
+			HSMIdentity:        spectator.Identity,
+			HSMDebugCapability: spectator.Capability,
+		}
+		researchJoinTokens[token] = join
+		researchGuestUsers[userID] = join
+		links[spectator.Identity] = fmt.Sprintf("%s/join/%s", researchPublicBaseURL(), token)
 	}
 	return links
 }
@@ -1131,6 +1253,17 @@ func copyStringMap(source map[string]string) map[string]string {
 }
 
 func researchSessionStatus(session *ResearchSession) gin.H {
+	session.HSMMutex.Lock()
+	requests := make([]*ResearchHSMSnapshotRequest, 0, len(session.PendingHSMSnapshotRequests))
+	for _, request := range session.PendingHSMSnapshotRequests {
+		requests = append(requests, request)
+	}
+	legalActionsByBoundary := make(map[int][]string, len(session.HSMLegalActionsByBoundary))
+	for boundary, actions := range session.HSMLegalActionsByBoundary {
+		legalActionsByBoundary[boundary] = append([]string(nil), actions...)
+	}
+	session.HSMMutex.Unlock()
+	sort.Slice(requests, func(i, j int) bool { return requests[i].RequestID < requests[j].RequestID })
 	status := gin.H{
 		"game_id":                       session.GameID,
 		"paused":                        false,
@@ -1145,6 +1278,8 @@ func researchSessionStatus(session *ResearchSession) gin.H {
 		"auto_action_taken":             false,
 		"timeout_action_taken":          false,
 		"last_action":                   nil,
+		"hsm_snapshot_requests":         requests,
+		"hsm_legal_actions_by_boundary": legalActionsByBoundary,
 	}
 	if session.TableID != 0 {
 		researchAttachTableStatus(status, session)
@@ -1342,6 +1477,13 @@ func researchHandleGuestConnected(s *Session) {
 	join, ok := researchGuestUsers[s.UserID]
 	researchSessionsMutex.Unlock()
 	if !ok {
+		return
+	}
+	if join.SeatIndex < 0 {
+		commandTableSpectate(NewSessionContext(s), s, &CommandData{
+			TableID:              join.TableID,
+			ShadowingPlayerIndex: -1,
+		})
 		return
 	}
 

@@ -42,6 +42,9 @@ func actionsFunctionsInit() {
 //	  value: 0,
 //	}
 func commandAction(ctx context.Context, s *Session, d *CommandData) {
+	if !d.NoTableLock {
+		researchRecordHSMDecisionBoundary(ctx, d.TableID)
+	}
 	t, exists := getTableAndLock(ctx, s, d.TableID, !d.NoTableLock, !d.NoTablesLock)
 	if !exists {
 		return

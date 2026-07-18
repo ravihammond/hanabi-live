@@ -35,4 +35,10 @@ export interface InitData {
   // Persistent localhost research run controls.
   readonly researchPersistentSingleGame: boolean;
   readonly researchRestartController: boolean;
+  readonly hsmDebug?: {
+    readonly capability: "own_perspective" | "switchable";
+    readonly identity: string;
+    readonly ownPerspective: number;
+    readonly physicalTruthAllowed: boolean;
+  };
 }

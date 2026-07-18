@@ -9,6 +9,7 @@ import { globals } from "./UIGlobals";
 import * as arrows from "./arrows";
 import type { Shuttle } from "./controls/Shuttle";
 import { getCardOrStackBase } from "./getCardOrStackBase";
+import { setHSMTargetBoundary } from "./hsmInspector";
 import { animate } from "./konvaHelpers";
 
 const setTurnButton = getHTMLElement("#set-turn-button");
@@ -30,6 +31,12 @@ export function enter(customSegment?: number): void {
     type: "replayEnter",
     segment,
   });
+  const visible = globals.state.visibleState ?? globals.state.ongoingGame;
+  setHSMTargetBoundary(
+    visible.turn.turnNum,
+    globals.state.ongoingGame.turn.turnNum,
+    visible.turn.currentPlayerIndex ?? globals.metadata.ourPlayerIndex,
+  );
 }
 
 export function exit(): void {
@@ -42,6 +49,12 @@ export function exit(): void {
   globals.store!.dispatch({
     type: "replayExit",
   });
+  const visible = globals.state.visibleState ?? globals.state.ongoingGame;
+  setHSMTargetBoundary(
+    visible.turn.turnNum,
+    globals.state.ongoingGame.turn.turnNum,
+    visible.turn.currentPlayerIndex ?? globals.metadata.ourPlayerIndex,
+  );
 }
 
 function getCurrentReplaySegment() {
@@ -100,6 +113,12 @@ export function goToSegment(
     type: "replaySegment",
     segment: newSegment,
   });
+  const visible = globals.state.visibleState ?? globals.state.ongoingGame;
+  setHSMTargetBoundary(
+    visible.turn.turnNum,
+    globals.state.ongoingGame.turn.turnNum,
+    visible.turn.currentPlayerIndex ?? globals.metadata.ourPlayerIndex,
+  );
 
   if (
     globals.state.replay.shared !== null

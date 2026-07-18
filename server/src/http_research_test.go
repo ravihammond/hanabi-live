@@ -76,6 +76,142 @@ func TestSingleGameRestartControllerRequestAppearsInStatus(t *testing.T) {
 	}
 }
 
+func TestSingleGameCreatesOnlyAuthorizedHSMJoinLinks(t *testing.T) {
+	researchTestInit(t)
+	router := researchTestRouter()
+	payload := researchSingleGamePayload()
+	payload.RosterPlayers[0].HSMDebugCapability = "switchable"
+	payload.HSMDebugSpectator = &ResearchHSMDebugSpectator{
+		Identity:   "hsm_debug_spectator",
+		Capability: "switchable",
+	}
+
+	response := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/single-game",
+		payload,
+		"secret",
+	)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	}
+	var created CreatedResearchSingleGame
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to parse creation response: %v", err)
+	}
+
+	if _, ok := created.JoinLinks["roster_player_0"]; !ok {
+		t.Fatal("authorized Debug Participant did not receive its normal join link")
+	}
+	if _, ok := created.JoinLinks["hsm_debug_spectator"]; !ok {
+		t.Fatal("configured HSM Debug Spectator did not receive a join link")
+	}
+	if _, ok := created.JoinLinks["roster_player_1"]; ok {
+		t.Fatal("bot or unauthorized Roster Player received a browser join link")
+	}
+
+	participantToken := path.Base(created.JoinLinks["roster_player_0"])
+	participant := researchJoinTokens[participantToken]
+	if participant.HSMDebugCapability != "switchable" || participant.HSMIdentity != "roster_player_0" {
+		t.Fatalf("participant capability was not bound to its join token: %#v", participant)
+	}
+	spectatorToken := path.Base(created.JoinLinks["hsm_debug_spectator"])
+	spectator := researchJoinTokens[spectatorToken]
+	if spectator.SeatIndex != -1 || spectator.HSMDebugCapability != "switchable" {
+		t.Fatalf("debug spectator must remain seatless and switchable: %#v", spectator)
+	}
+}
+
+func TestAuthorizedHSMRequestIsPolledAndPublishedExactlyOnce(t *testing.T) {
+	researchTestInit(t)
+	commandInit()
+	router := researchTestRouter()
+	payload := researchSingleGamePayload()
+	payload.RosterPlayers[0].HSMDebugCapability = "switchable"
+	response := researchJSONRequest(t, router, http.MethodPost, "/research/single-game", payload, "secret")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	}
+	var created CreatedResearchSingleGame
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to parse creation response: %v", err)
+	}
+	join := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
+	viewer := NewFakeSession(join.UserID, join.Username)
+	researchHandleGuestConnected(viewer)
+	researchRecordHSMDecisionBoundary(context.Background(), created.TableID)
+
+	commandResearchHSMRequest(context.Background(), viewer, &CommandData{
+		TableID:              created.TableID,
+		HSMTargetBoundary:    0,
+		HSMEvidenceBoundary:  0,
+		HSMPerspectivePlayer: 0,
+		HSMActorPlayer:       0,
+		HSMPhysicalTruth:     true,
+	})
+
+	statusResponse := researchJSONRequest(t, router, http.MethodGet, "/research/sessions/"+created.GameID+"/status", nil, "secret")
+	var status struct {
+		Requests        []ResearchHSMSnapshotRequest `json:"hsm_snapshot_requests"`
+		LegalByBoundary map[string][]string          `json:"hsm_legal_actions_by_boundary"`
+	}
+	if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil {
+		t.Fatalf("failed to parse status response: %v", err)
+	}
+	if len(status.Requests) != 1 {
+		t.Fatalf("expected one pending HSM request, got %#v", status.Requests)
+	}
+	if len(status.LegalByBoundary["0"]) == 0 {
+		t.Fatalf("authority legal actions were not retained for Replay Boundary 0: %#v", status.LegalByBoundary)
+	}
+	request := status.Requests[0]
+	if request.Identity != "roster_player_0" || request.PerspectivePlayer != 0 || !request.PhysicalTruth {
+		t.Fatalf("request lost its server-bound identity or controls: %#v", request)
+	}
+
+	publish := researchJSONRequest(t, router, http.MethodPost, "/research/sessions/"+created.GameID+"/hsm-snapshot", map[string]interface{}{
+		"request_id": request.RequestID,
+		"snapshot":   map[string]interface{}{"targetBoundary": 0},
+	}, "secret")
+	if publish.Code != http.StatusOK {
+		t.Fatalf("expected snapshot publication 200, got %d: %s", publish.Code, publish.Body.String())
+	}
+	statusResponse = researchJSONRequest(t, router, http.MethodGet, "/research/sessions/"+created.GameID+"/status", nil, "secret")
+	if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil {
+		t.Fatalf("failed to parse final status response: %v", err)
+	}
+	if len(status.Requests) != 0 {
+		t.Fatalf("published request remained pending: %#v", status.Requests)
+	}
+}
+
+func TestUnauthorizedResearchPlayerHasNoHSMInitializationOrRequests(t *testing.T) {
+	researchTestInit(t)
+	commandInit()
+	router := researchTestRouter()
+	response := researchJSONRequest(t, router, http.MethodPost, "/research/single-game", researchSingleGamePayload(), "secret")
+	var created CreatedResearchSingleGame
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to parse creation response: %v", err)
+	}
+	join := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
+	viewer := NewFakeSession(join.UserID, join.Username)
+	if debug := researchHSMDebugInitForUser(viewer.UserID); debug != nil {
+		t.Fatalf("unauthorized player received HSM initialization: %#v", debug)
+	}
+	commandResearchHSMRequest(context.Background(), viewer, &CommandData{
+		TableID:              created.TableID,
+		HSMTargetBoundary:    0,
+		HSMEvidenceBoundary:  0,
+		HSMPerspectivePlayer: 0,
+	})
+	if requests := researchSessions[created.GameID].PendingHSMSnapshotRequests; len(requests) != 0 {
+		t.Fatalf("unauthorized request entered the diagnostic queue: %#v", requests)
+	}
+}
+
 func TestSingleGameAttendanceLockRejectsPlayerUnattend(t *testing.T) {
 	researchTestInit(t)
 	router := researchTestRouter()

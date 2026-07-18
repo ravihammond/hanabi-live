@@ -35,6 +35,12 @@ import { globals } from "./UIGlobals";
 import * as arrows from "./arrows";
 import { setSkullEnabled, setSkullNormal } from "./drawUI";
 import { getCardOrStackBase } from "./getCardOrStackBase";
+import {
+  handleHSMSnapshot,
+  initHSMInspector,
+  setHSMTargetBoundary,
+  type HSMSnapshotMessage,
+} from "./hsmInspector";
 import * as hypothetical from "./hypothetical";
 import * as notes from "./notes";
 import { StateObserver } from "./reactive/StateObserver";
@@ -176,6 +182,14 @@ gameCommands.set("init", (metadata: InitData) => {
   setURL(metadata);
   initStateStore(metadata);
 
+  initHSMInspector(
+    metadata.hsmDebug === undefined
+      ? null
+      : { ...metadata.hsmDebug, playerNames: metadata.playerNames },
+    (command, data) => globals.lobby.conn!.send(command, data),
+  );
+  globals.lobby.ui?.applyHSMReservedLayout();
+
   // Now that we know the number of players and the variant, we can start to load & draw the UI.
   uiInit();
 });
@@ -262,6 +276,7 @@ interface GameActionData {
 gameCommands.set("gameAction", (data: GameActionData) => {
   // Update the game state.
   globals.store!.dispatch(data.action);
+  syncHSMToVisibleBoundary();
 });
 
 interface GameActionListData {
@@ -283,12 +298,17 @@ gameCommands.set("gameActionList", (data: GameActionListData) => {
     type: "gameActionList",
     actions: data.list,
   });
+  syncHSMToVisibleBoundary();
 
   // We might need to go to a specific turn if we loaded a URL of e.g.:
   // http://localhost/replay/123#5
   if (specificTurnString !== undefined) {
     replay.goTo(specificTurnString);
   }
+});
+
+gameCommands.set("hsmSnapshot", (data: HSMSnapshotMessage) => {
+  handleHSMSnapshot(data);
 });
 
 interface PauseData {
@@ -451,6 +471,20 @@ function setNoteIndicatorAndCheckForSpecialNote() {
   for (const stackBase of globals.stackBases) {
     stackBase.checkSpecialNote();
   }
+}
+
+export function syncHSMToVisibleBoundary(): void {
+  if (globals.store === null) {
+    return;
+  }
+  const visible = globals.state.visibleState ?? globals.state.ongoingGame;
+  const actor =
+    visible.turn.currentPlayerIndex ?? globals.metadata.ourPlayerIndex;
+  setHSMTargetBoundary(
+    visible.turn.turnNum,
+    globals.state.ongoingGame.turn.turnNum,
+    actor,
+  );
 }
 
 function suggestTurn(who: string, room: string, segment: number) {
