@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, jest, test } from "@jest/globals";
 import {
   destroyHSMInspector,
+  handleHSMSnapshotFailure,
   handleHSMSnapshot,
   initHSMInspector,
   setHSMTargetBoundary,
@@ -15,6 +16,7 @@ describe("native HSM inspector", () => {
     const send = jest.fn();
     initHSMInspector(
       {
+        tableID: 42,
         capability: "switchable",
         identity: "alice",
         ownPerspective: 0,
@@ -47,6 +49,7 @@ describe("native HSM inspector", () => {
     const send = jest.fn();
     initHSMInspector(
       {
+        tableID: 42,
         capability: "switchable",
         identity: "alice",
         ownPerspective: 0,
@@ -86,6 +89,7 @@ describe("native HSM inspector", () => {
     expect(send).toHaveBeenLastCalledWith(
       "researchHSMRequest",
       expect.objectContaining({
+        tableID: 42,
         targetBoundary: 3,
         evidenceBoundary: 6,
         perspectivePlayer: 0,
@@ -97,6 +101,7 @@ describe("native HSM inspector", () => {
     const send = jest.fn();
     initHSMInspector(
       {
+        tableID: 42,
         capability: "own_perspective",
         identity: "alice",
         ownPerspective: 0,
@@ -156,10 +161,38 @@ describe("native HSM inspector", () => {
     );
   });
 
+  test("leaves loading with an explicit failure when exact evaluation fails", () => {
+    initHSMInspector(
+      {
+        tableID: 42,
+        capability: "own_perspective",
+        identity: "alice",
+        ownPerspective: 0,
+        playerNames: ["Alice", "Bob"],
+        physicalTruthAllowed: false,
+      },
+      jest.fn(),
+    );
+
+    handleHSMSnapshotFailure({
+      requestID: 1,
+      targetBoundary: 0,
+      evidenceBoundary: 0,
+      perspectivePlayer: 0,
+      error: "Exact HSM evaluation failed.",
+    });
+
+    expect(document.querySelector("#hsm-debug-loading")).toBeNull();
+    expect(document.querySelector("#hsm-debug-failure")?.textContent).toBe(
+      "Exact HSM evaluation failed.",
+    );
+  });
+
   test("applies the selected card-label presentation", () => {
     const send = jest.fn();
     initHSMInspector(
       {
+        tableID: 42,
         capability: "own_perspective",
         identity: "alice",
         ownPerspective: 0,
@@ -210,10 +243,117 @@ describe("native HSM inspector", () => {
     );
   });
 
+  test("selects a legal action and progressively reveals its diagnostics", () => {
+    initHSMInspector(
+      {
+        tableID: 42,
+        capability: "own_perspective",
+        identity: "alice",
+        ownPerspective: 0,
+        playerNames: ["Alice", "Bob"],
+        physicalTruthAllowed: false,
+      },
+      jest.fn(),
+    );
+    handleHSMSnapshot({
+      requestID: 1,
+      snapshot: {
+        targetBoundary: 0,
+        evidenceBoundary: 0,
+        perspectivePlayer: 0,
+        actionTimeClassification: null,
+        diagnosticInterpretation: "1 follow, 0 violation",
+        cards: [],
+        legalActions: [
+          {
+            actionID: 3,
+            label: "Discard slot 3",
+            classification: "follow",
+            focusedMeanings: ["Play"],
+            semanticEvidence: ["Play Ready"],
+          },
+        ],
+        ruleRows: [],
+        relaxedSources: [],
+        solver: {},
+        capacity: {},
+        plainText: "[hsm] exact",
+      },
+    });
+
+    document
+      .querySelector<HTMLButtonElement>(".hsm-debug-action")
+      ?.click();
+
+    expect(
+      document
+        .querySelector(".hsm-debug-action")
+        ?.getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(document.querySelector("#hsm-debug-action-details")?.textContent)
+      .toContain("Play Ready");
+  });
+
+  test("preserves presentation preferences only within the same run", () => {
+    const debug = {
+      tableID: 42,
+      capability: "switchable" as const,
+      identity: "alice",
+      ownPerspective: 0,
+      playerNames: ["Alice", "Bob"],
+      physicalTruthAllowed: true,
+    };
+    initHSMInspector(debug, jest.fn());
+    document
+      .querySelector<HTMLButtonElement>("#hsm-debug-drawer-close")
+      ?.click();
+    const labels = document.querySelector<HTMLSelectElement>(
+      "#hsm-debug-card-labels",
+    )!;
+    labels.value = "off";
+    labels.dispatchEvent(new Event("change", { bubbles: true }));
+
+    initHSMInspector(debug, jest.fn());
+
+    expect(document.body.classList.contains("hsm-inspector-open")).toBe(false);
+    expect(
+      document.querySelector<HTMLSelectElement>("#hsm-debug-card-labels")?.value,
+    ).toBe("off");
+
+    initHSMInspector({ ...debug, tableID: 84 }, jest.fn());
+
+    expect(document.body.classList.contains("hsm-inspector-open")).toBe(true);
+    expect(
+      document.querySelector<HTMLSelectElement>("#hsm-debug-card-labels")?.value,
+    ).toBe("badges");
+  });
+
+  test("allows Physical Truth for a switchable participant after completion", () => {
+    initHSMInspector(
+      {
+        tableID: 42,
+        capability: "switchable",
+        identity: "alice",
+        ownPerspective: 0,
+        playerNames: ["Alice", "Bob"],
+        physicalTruthAllowed: true,
+      },
+      jest.fn(),
+    );
+
+    setHSMTargetBoundary(5, 5, 0, true);
+
+    expect(
+      document.querySelector<HTMLInputElement>("#hsm-debug-physical-truth")
+        ?.disabled,
+    ).toBe(false);
+  });
+
   test("rejects a late Physical Truth response after the overlay is disabled", () => {
     const send = jest.fn();
     initHSMInspector(
       {
+        tableID: 42,
         capability: "switchable",
         identity: "hsm_debug_spectator",
         ownPerspective: 0,

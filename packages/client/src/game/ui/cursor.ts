@@ -71,12 +71,15 @@ export function elementOverlaps(element: LayoutChild): boolean {
     return false;
   }
 
-  // This method will return undefined if the cursor is not inside of the stage.
-  const pos = globals.stage.getPointerPosition();
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-  if (pos === undefined) {
+  // Konva warns when getPointerPosition() is called before its first pointer
+  // event. Layout updates legitimately run before a pointer enters the stage.
+  const pointerStage = globals.stage as Konva.Stage & {
+    pointerPos?: Konva.Vector2d;
+  };
+  if (pointerStage.pointerPos === undefined) {
     return false;
   }
+  const pos = pointerStage.getPointerPosition();
 
   return posOverlaps(pos, element);
 }

@@ -184,6 +184,20 @@ body.hsm-debug-authorized {
   gap: 6px;
 }
 
+.hsm-debug-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hsm-debug-action {
+  padding: 5px 7px;
+}
+
+.hsm-debug-action[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px #6aa8db;
+}
+
 .hsm-debug-card-badge {
   padding: 5px 7px;
   border: 1px solid #56717c;

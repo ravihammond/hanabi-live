@@ -27,8 +27,12 @@ func commandResearchHSMRequest(ctx context.Context, s *Session, d *CommandData) 
 	}
 	currentBoundary := len(table.Game.Actions2)
 	actor := table.Game.ActivePlayerIndex
+	targetIsTerminal := table.Game.EndCondition > EndConditionInProgress && d.HSMTargetBoundary == currentBoundary
+	if targetIsTerminal {
+		actor = -1
+	}
 	session.HSMMutex.Lock()
-	if recordedActor, exists := session.HSMActorsByBoundary[d.HSMTargetBoundary]; exists {
+	if recordedActor, exists := session.HSMActorsByBoundary[d.HSMTargetBoundary]; exists && !targetIsTerminal {
 		actor = recordedActor
 	}
 	session.HSMMutex.Unlock()
@@ -45,7 +49,8 @@ func commandResearchHSMRequest(ctx context.Context, s *Session, d *CommandData) 
 	}
 	isDebugSpectator := join.SeatIndex < 0
 	physicalTruthAllowed := isDebugSpectator ||
-		(join.HSMDebugCapability == "switchable" && d.HSMPerspectivePlayer != join.SeatIndex)
+		(join.HSMDebugCapability == "switchable" &&
+			(d.HSMPerspectivePlayer != join.SeatIndex || targetIsTerminal))
 	if d.HSMPhysicalTruth && !physicalTruthAllowed {
 		return
 	}

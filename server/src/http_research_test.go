@@ -185,6 +185,71 @@ func TestAuthorizedHSMRequestIsPolledAndPublishedExactlyOnce(t *testing.T) {
 	if len(status.Requests) != 0 {
 		t.Fatalf("published request remained pending: %#v", status.Requests)
 	}
+
+	commandResearchHSMRequest(context.Background(), viewer, &CommandData{
+		TableID:              created.TableID,
+		HSMTargetBoundary:    0,
+		HSMEvidenceBoundary:  0,
+		HSMPerspectivePlayer: 0,
+		HSMActorPlayer:       0,
+	})
+	statusResponse = researchJSONRequest(t, router, http.MethodGet, "/research/sessions/"+created.GameID+"/status", nil, "secret")
+	if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil {
+		t.Fatalf("failed to parse failure-pending status response: %v", err)
+	}
+	if len(status.Requests) != 1 {
+		t.Fatalf("expected one pending request before failure, got %#v", status.Requests)
+	}
+	failure := researchJSONRequest(t, router, http.MethodPost, "/research/sessions/"+created.GameID+"/hsm-snapshot-failure", map[string]interface{}{
+		"request_id": status.Requests[0].RequestID,
+		"error":      "Exact HSM evaluation failed.",
+	}, "secret")
+	if failure.Code != http.StatusOK {
+		t.Fatalf("expected snapshot failure publication 200, got %d: %s", failure.Code, failure.Body.String())
+	}
+	statusResponse = researchJSONRequest(t, router, http.MethodGet, "/research/sessions/"+created.GameID+"/status", nil, "secret")
+	if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil {
+		t.Fatalf("failed to parse failure-final status response: %v", err)
+	}
+	if len(status.Requests) != 0 {
+		t.Fatalf("failed request remained pending: %#v", status.Requests)
+	}
+}
+
+func TestSwitchableParticipantCanRequestOwnPhysicalTruthAfterCompletion(t *testing.T) {
+	researchTestInit(t)
+	commandInit()
+	router := researchTestRouter()
+	payload := researchSingleGamePayload()
+	payload.RosterPlayers[0].HSMDebugCapability = "switchable"
+	response := researchJSONRequest(t, router, http.MethodPost, "/research/single-game", payload, "secret")
+	var created CreatedResearchSingleGame
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to parse creation response: %v", err)
+	}
+	join := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
+	viewer := NewFakeSession(join.UserID, join.Username)
+	researchHandleGuestConnected(viewer)
+	table, ok := tables.Get(created.TableID, true)
+	if !ok {
+		t.Fatalf("created table %d does not exist", created.TableID)
+	}
+	table.Lock(nil)
+	table.Game.EndCondition = EndConditionNormal
+	table.Unlock(nil)
+
+	commandResearchHSMRequest(context.Background(), viewer, &CommandData{
+		TableID:              created.TableID,
+		HSMTargetBoundary:    0,
+		HSMEvidenceBoundary:  0,
+		HSMPerspectivePlayer: join.SeatIndex,
+		HSMPhysicalTruth:     true,
+	})
+
+	requests := researchSessions[created.GameID].PendingHSMSnapshotRequests
+	if len(requests) != 1 {
+		t.Fatalf("completed own-perspective Physical Truth request was rejected: %#v", requests)
+	}
 }
 
 func TestUnauthorizedResearchPlayerHasNoHSMInitializationOrRequests(t *testing.T) {

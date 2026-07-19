@@ -61,10 +61,11 @@ func websocketConnect(ms *melody.Session) {
 	// (we attach other data later)
 
 	ctx := NewSessionContext(s)
+	researchGuest := researchIsGuestUser(s.UserID)
 
 	// Next, perform all the expensive database retrieval to gather the data we need
 	// We want to do this before we start locking any mutexes (to minimize the lock time)
-	data := websocketConnectGetData(ctx, ms, userID, username)
+	data := websocketConnectDataForIdentity(ctx, ms, userID, username, researchGuest)
 
 	// Attach the new data to the session object
 	s.Muted = data.Muted
@@ -76,8 +77,6 @@ func websocketConnect(ms *melody.Session) {
 	// Use a dedicated mutex to prevent race conditions
 	sessions.ConnectMutex.Lock()
 	defer sessions.ConnectMutex.Unlock()
-
-	researchGuest := researchIsGuestUser(s.UserID)
 
 	// Disconnect any existing connections with this user ID
 	if s2, ok := sessions.Get(s.UserID); ok {
@@ -121,6 +120,19 @@ func websocketConnect(ms *melody.Session) {
 	notifyAllUser(s)
 
 	logger.Info("Exited the \"websocketConnect()\" function for user: " + username)
+}
+
+func websocketConnectDataForIdentity(
+	ctx context.Context,
+	ms *melody.Session,
+	userID int,
+	username string,
+	researchGuest bool,
+) *WebsocketConnectData {
+	if researchGuest {
+		return newWebsocketConnectData()
+	}
+	return websocketConnectGetData(ctx, ms, userID, username)
 }
 
 func websocketConnectMessages(ctx context.Context, s *Session, data *WebsocketConnectData) {

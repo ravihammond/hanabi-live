@@ -36,10 +36,12 @@ import * as arrows from "./arrows";
 import { setSkullEnabled, setSkullNormal } from "./drawUI";
 import { getCardOrStackBase } from "./getCardOrStackBase";
 import {
+  handleHSMSnapshotFailure,
   handleHSMSnapshot,
   initHSMInspector,
   setHSMTargetBoundary,
   type HSMSnapshotMessage,
+  type HSMSnapshotFailureMessage,
 } from "./hsmInspector";
 import * as hypothetical from "./hypothetical";
 import * as notes from "./notes";
@@ -185,7 +187,11 @@ gameCommands.set("init", (metadata: InitData) => {
   initHSMInspector(
     metadata.hsmDebug === undefined
       ? null
-      : { ...metadata.hsmDebug, playerNames: metadata.playerNames },
+      : {
+        ...metadata.hsmDebug,
+        tableID: metadata.tableID,
+        playerNames: metadata.playerNames,
+      },
     (command, data) => globals.lobby.conn!.send(command, data),
   );
   globals.lobby.ui?.applyHSMReservedLayout();
@@ -310,6 +316,13 @@ gameCommands.set("gameActionList", (data: GameActionListData) => {
 gameCommands.set("hsmSnapshot", (data: HSMSnapshotMessage) => {
   handleHSMSnapshot(data);
 });
+
+gameCommands.set(
+  "hsmSnapshotFailure",
+  (data: HSMSnapshotFailureMessage) => {
+    handleHSMSnapshotFailure(data);
+  },
+);
 
 interface PauseData {
   active: boolean;
@@ -484,6 +497,7 @@ export function syncHSMToVisibleBoundary(): void {
     visible.turn.turnNum,
     globals.state.ongoingGame.turn.turnNum,
     actor,
+    globals.state.finished,
   );
 }
 

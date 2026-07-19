@@ -36,6 +36,7 @@ export function enter(customSegment?: number): void {
     visible.turn.turnNum,
     globals.state.ongoingGame.turn.turnNum,
     visible.turn.currentPlayerIndex ?? globals.metadata.ourPlayerIndex,
+    globals.state.finished,
   );
 }
 
@@ -54,6 +55,7 @@ export function exit(): void {
     visible.turn.turnNum,
     globals.state.ongoingGame.turn.turnNum,
     visible.turn.currentPlayerIndex ?? globals.metadata.ourPlayerIndex,
+    globals.state.finished,
   );
 }
 
@@ -118,6 +120,7 @@ export function goToSegment(
     visible.turn.turnNum,
     globals.state.ongoingGame.turn.turnNum,
     visible.turn.currentPlayerIndex ?? globals.metadata.ourPlayerIndex,
+    globals.state.finished,
   );
 
   if (

@@ -193,6 +193,11 @@ type ResearchHSMSnapshotPublication struct {
 	Snapshot  map[string]interface{} `json:"snapshot"`
 }
 
+type ResearchHSMSnapshotFailurePublication struct {
+	RequestID int    `json:"request_id"`
+	Error     string `json:"error"`
+}
+
 type validatedResearchLayout struct {
 	deckOrder            []*CardIdentity
 	seatOrder            []int
@@ -207,6 +212,7 @@ func registerResearchRoutes(router *gin.Engine) {
 	router.POST("/research/sessions/:gameID/current-game-layout", researchUpdateCurrentGameLayout)
 	router.POST("/research/sessions/:gameID/restart", researchRestartSingleGame)
 	router.POST("/research/sessions/:gameID/hsm-snapshot", researchPublishHSMSnapshot)
+	router.POST("/research/sessions/:gameID/hsm-snapshot-failure", researchPublishHSMSnapshotFailure)
 	router.GET("/research/sessions/:gameID/status", researchGetSessionStatus)
 	router.POST("/research/sessions/:gameID/bot-action", researchPostBotAction)
 	router.POST("/research/sessions/:gameID/bot-join-session", researchCreateBotJoinSession)
@@ -683,6 +689,44 @@ func researchPublishHSMSnapshot(c *gin.Context) {
 	request.Client.Emit("hsmSnapshot", gin.H{
 		"requestID": publication.RequestID,
 		"snapshot":  publication.Snapshot,
+	})
+	c.JSON(http.StatusOK, gin.H{"published": true})
+}
+
+func researchPublishHSMSnapshotFailure(c *gin.Context) {
+	if !researchRequireAdminToken(c) {
+		return
+	}
+	var publication ResearchHSMSnapshotFailurePublication
+	if err := c.ShouldBindJSON(&publication); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
+		return
+	}
+	researchSessionsMutex.Lock()
+	session, ok := researchSessions[c.Param("gameID")]
+	if !ok {
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusNotFound, gin.H{"detail": "Research session is not valid."})
+		return
+	}
+	session.HSMMutex.Lock()
+	request, ok := session.PendingHSMSnapshotRequests[publication.RequestID]
+	if !ok {
+		session.HSMMutex.Unlock()
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusNotFound, gin.H{"detail": "HSM snapshot request is not pending."})
+		return
+	}
+	delete(session.PendingHSMSnapshotRequests, publication.RequestID)
+	session.HSMMutex.Unlock()
+	researchSessionsMutex.Unlock()
+
+	request.Client.Emit("hsmSnapshotFailure", gin.H{
+		"requestID":         publication.RequestID,
+		"targetBoundary":    request.TargetBoundary,
+		"evidenceBoundary":  request.EvidenceBoundary,
+		"perspectivePlayer": request.PerspectivePlayer,
+		"error":             publication.Error,
 	})
 	c.JSON(http.StatusOK, gin.H{"published": true})
 }

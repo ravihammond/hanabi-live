@@ -1,6 +1,7 @@
 type HSMDebugCapability = "own_perspective" | "switchable";
 
 export interface HSMDebugInit {
+  readonly tableID: number;
   readonly capability: HSMDebugCapability;
   readonly identity: string;
   readonly ownPerspective: number;
@@ -29,11 +30,20 @@ export interface HSMSnapshotMessage {
   readonly snapshot: HSMSnapshot;
 }
 
+export interface HSMSnapshotFailureMessage {
+  readonly requestID: number;
+  readonly targetBoundary: number;
+  readonly evidenceBoundary: number;
+  readonly perspectivePlayer: number;
+  readonly error: string;
+}
+
 type SendCommand = (command: string, data: Record<string, unknown>) => void;
 
 interface InspectorState {
   targetBoundary: number;
   maxBoundary: number;
+  gameFinished: boolean;
   evidenceBoundary: number;
   actorPlayer: number;
   perspectivePlayer: number;
@@ -43,8 +53,15 @@ interface InspectorState {
   physicalTruth: boolean;
   cardLabels: "badges" | "summary" | "off";
   selectedCardID: number | null;
+  selectedActionID: number | null;
   snapshot: HSMSnapshot | null;
   loading: boolean;
+  failure: string | null;
+}
+
+interface InspectorPreferences {
+  readonly drawerOpen: boolean;
+  readonly cardLabels: InspectorState["cardLabels"];
 }
 
 let config: HSMDebugInit | null = null;
@@ -56,26 +73,39 @@ export function initHSMInspector(
   debug: HSMDebugInit | null,
   send: SendCommand,
 ): void {
-  destroyHSMInspector();
   if (debug === null) {
+    destroyHSMInspector();
     return;
   }
+  const previousPreferenceKey = preferenceKey(config);
+  const nextPreferenceKey = preferenceKey(debug);
+  if (
+    previousPreferenceKey !== null
+    && previousPreferenceKey !== nextPreferenceKey
+  ) {
+    removePreferences(previousPreferenceKey);
+  }
+  teardownHSMInspector();
+  const preferences = loadPreferences(nextPreferenceKey);
   config = debug;
   sendCommand = send;
   state = {
     targetBoundary: 0,
     maxBoundary: 0,
+    gameFinished: false,
     evidenceBoundary: 0,
     actorPlayer: debug.ownPerspective,
     perspectivePlayer: debug.ownPerspective,
     followActor: debug.capability === "switchable",
     historical: true,
-    drawerOpen: true,
+    drawerOpen: preferences?.drawerOpen ?? true,
     physicalTruth: false,
-    cardLabels: "badges",
+    cardLabels: preferences?.cardLabels ?? "badges",
     selectedCardID: null,
+    selectedActionID: null,
     snapshot: null,
     loading: true,
+    failure: null,
   };
   root = document.createElement("div");
   root.id = "hsm-debug-root";
@@ -86,6 +116,14 @@ export function initHSMInspector(
 }
 
 export function destroyHSMInspector(): void {
+  const key = preferenceKey(config);
+  teardownHSMInspector();
+  if (key !== null) {
+    removePreferences(key);
+  }
+}
+
+function teardownHSMInspector(): void {
   root?.remove();
   root = null;
   config = null;
@@ -125,6 +163,7 @@ export function setHSMTargetBoundary(
   targetBoundary: number,
   maxBoundary: number,
   actorPlayer: number,
+  gameFinished = false,
 ): void {
   if (state === null || config === null) {
     return;
@@ -135,11 +174,13 @@ export function setHSMTargetBoundary(
     state.targetBoundary === nextTarget
     && state.maxBoundary === nextMax
     && state.actorPlayer === actorPlayer
+    && state.gameFinished === gameFinished
   ) {
     return;
   }
   state.targetBoundary = nextTarget;
   state.maxBoundary = nextMax;
+  state.gameFinished = gameFinished;
   state.actorPlayer = actorPlayer;
   if (state.followActor) {
     state.perspectivePlayer = actorPlayer;
@@ -154,7 +195,9 @@ export function setHSMTargetBoundary(
   }
   state.snapshot = null;
   state.selectedCardID = null;
+  state.selectedActionID = null;
   state.loading = true;
+  state.failure = null;
   render();
   requestSnapshot();
 }
@@ -174,17 +217,38 @@ export function handleHSMSnapshot(message: HSMSnapshotMessage): void {
     return;
   }
   state.snapshot = snapshot;
+  state.selectedActionID = null;
   state.loading = false;
+  state.failure = null;
+  render();
+}
+
+export function handleHSMSnapshotFailure(
+  message: HSMSnapshotFailureMessage,
+): void {
+  if (
+    state === null
+    || message.targetBoundary !== state.targetBoundary
+    || message.evidenceBoundary !== state.evidenceBoundary
+    || message.perspectivePlayer !== state.perspectivePlayer
+  ) {
+    return;
+  }
+  state.snapshot = null;
+  state.loading = false;
+  state.failure = message.error;
   render();
 }
 
 function requestSnapshot(): void {
-  if (state === null || sendCommand === null) {
+  if (state === null || sendCommand === null || config === null) {
     return;
   }
   state.loading = true;
   state.snapshot = null;
+  state.failure = null;
   sendCommand("researchHSMRequest", {
+    tableID: config.tableID,
     targetBoundary: state.targetBoundary,
     evidenceBoundary: state.evidenceBoundary,
     perspectivePlayer: state.perspectivePlayer,
@@ -278,6 +342,7 @@ function buildCardLabelSelect(): HTMLSelectElement {
       return;
     }
     state.cardLabels = select.value as InspectorState["cardLabels"];
+    savePreferences();
     render();
   });
   return select;
@@ -292,7 +357,8 @@ function buildTruthControl(): HTMLElement {
   const allowed =
     config?.physicalTruthAllowed === true
     && (config.identity === "hsm_debug_spectator"
-      || state?.perspectivePlayer !== config.ownPerspective);
+      || state?.perspectivePlayer !== config.ownPerspective
+      || state?.gameFinished === true);
   input.disabled = !allowed;
   input.addEventListener("change", () => {
     if (state === null) {
@@ -346,7 +412,15 @@ function buildDrawer(): HTMLElement {
   );
   drawer.append(heading, buildTimeline(), buildReadOnlyNotice());
   const snapshot = state?.snapshot ?? null;
-  if (state?.loading === true || snapshot === null) {
+  if (state?.failure !== null && state?.failure !== undefined) {
+    const failure = textElement(
+      "div",
+      state.failure,
+      "hsm-debug-failure",
+    );
+    failure.setAttribute("role", "alert");
+    drawer.append(failure);
+  } else if (state?.loading === true || snapshot === null) {
     const loading = textElement(
       "div",
       "Computing Diagnostic Snapshot…",
@@ -423,7 +497,7 @@ function buildSnapshot(snapshot: HSMSnapshot): HTMLElement {
       "hsm-debug-current",
     ),
     buildCards(snapshot.cards),
-    buildCollection("Legal action diagnostics", snapshot.legalActions, "label"),
+    buildLegalActions(snapshot.legalActions),
     buildCollection("Rule rows", snapshot.ruleRows, "rule"),
     buildObjectDetails("Solver statistics", snapshot.solver),
     buildObjectDetails("Capacity diagnostics", snapshot.capacity),
@@ -517,6 +591,46 @@ function buildCards(cards: readonly Record<string, unknown>[]): HTMLElement {
   return section;
 }
 
+function buildLegalActions(
+  actions: readonly Record<string, unknown>[],
+): HTMLElement {
+  const section = element("section", "hsm-debug-panel");
+  section.append(textElement("h3", "Legal action diagnostics"));
+  if (actions.length === 0) {
+    section.append(textElement("p", "None at this boundary"));
+    return section;
+  }
+  const actionsRow = element("div", "hsm-debug-actions");
+  for (const action of actions) {
+    const actionID = Number(action["actionID"]);
+    const classification = String(action["classification"] ?? "neutral");
+    const actionButton = button(String(action["label"] ?? actionID), "", () => {
+      if (state === null) {
+        return;
+      }
+      state.selectedActionID = actionID;
+      render();
+    });
+    actionButton.removeAttribute("id");
+    actionButton.className = `hsm-debug-action hsm-action-${classification}`;
+    actionButton.setAttribute(
+      "aria-pressed",
+      String(state?.selectedActionID === actionID),
+    );
+    actionsRow.append(actionButton);
+  }
+  section.append(actionsRow);
+  const selected = actions.find(
+    (action) => Number(action["actionID"]) === state?.selectedActionID,
+  );
+  if (selected !== undefined) {
+    const details = buildCollection("Selected action", [selected], "label");
+    details.id = "hsm-debug-action-details";
+    section.append(details);
+  }
+  return section;
+}
+
 function buildCollection(
   title: string,
   values: readonly Record<string, unknown>[],
@@ -592,6 +706,7 @@ function toggleDrawer(): void {
     return;
   }
   state.drawerOpen = !state.drawerOpen;
+  savePreferences();
   render();
   window.dispatchEvent(new Event("resize"));
 }
@@ -602,6 +717,7 @@ function renderAndRequest(): void {
   }
   state.snapshot = null;
   state.loading = true;
+  state.failure = null;
   render();
   requestSnapshot();
 }
@@ -659,6 +775,63 @@ function button(
   value.textContent = label;
   value.addEventListener("click", onClick);
   return value;
+}
+
+function preferenceKey(debug: HSMDebugInit | null): string | null {
+  return debug === null
+    ? null
+    : `hanabi-live:hsm-inspector:${debug.tableID}:${debug.identity}`;
+}
+
+function loadPreferences(key: string | null): InspectorPreferences | null {
+  if (key === null) {
+    return null;
+  }
+  try {
+    const raw = window.sessionStorage.getItem(key);
+    if (raw === null) {
+      return null;
+    }
+    const value = JSON.parse(raw) as Partial<InspectorPreferences>;
+    if (
+      typeof value.drawerOpen !== "boolean"
+      || !["badges", "summary", "off"].includes(String(value.cardLabels))
+    ) {
+      return null;
+    }
+    return {
+      drawerOpen: value.drawerOpen,
+      cardLabels: value.cardLabels as InspectorState["cardLabels"],
+    };
+  } catch {
+    return null;
+  }
+}
+
+function savePreferences(): void {
+  const key = preferenceKey(config);
+  if (key === null || state === null) {
+    return;
+  }
+  try {
+    window.sessionStorage.setItem(
+      key,
+      JSON.stringify({
+        drawerOpen: state.drawerOpen,
+        cardLabels: state.cardLabels,
+      } satisfies InspectorPreferences),
+    );
+  } catch {
+    // Presentation preferences must never block diagnostics.
+  }
+}
+
+function removePreferences(key: string): void {
+  try {
+    window.sessionStorage.removeItem(key);
+  } catch {
+    // Storage may be unavailable in privacy-restricted browser contexts.
+  }
 }
 
 document.addEventListener("keydown", (event) => {
