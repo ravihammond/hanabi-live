@@ -202,7 +202,10 @@ func TestAuthorizedHSMRequestIsPolledAndPublishedExactlyOnce(t *testing.T) {
 	}
 	failure := researchJSONRequest(t, router, http.MethodPost, "/research/sessions/"+created.GameID+"/hsm-snapshot-failure", map[string]interface{}{
 		"request_id": status.Requests[0].RequestID,
-		"error":      "Exact HSM evaluation failed.",
+		"error":      "HSM diagnostics unavailable.",
+		"failure": map[string]interface{}{
+			"category": "semantic_program_unsatisfiable",
+		},
 	}, "secret")
 	if failure.Code != http.StatusOK {
 		t.Fatalf("expected snapshot failure publication 200, got %d: %s", failure.Code, failure.Body.String())

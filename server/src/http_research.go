@@ -194,8 +194,9 @@ type ResearchHSMSnapshotPublication struct {
 }
 
 type ResearchHSMSnapshotFailurePublication struct {
-	RequestID int    `json:"request_id"`
-	Error     string `json:"error"`
+	RequestID int                    `json:"request_id"`
+	Error     string                 `json:"error"`
+	Failure   map[string]interface{} `json:"failure"`
 }
 
 type validatedResearchLayout struct {
@@ -727,6 +728,7 @@ func researchPublishHSMSnapshotFailure(c *gin.Context) {
 		"evidenceBoundary":  request.EvidenceBoundary,
 		"perspectivePlayer": request.PerspectivePlayer,
 		"error":             publication.Error,
+		"failure":           publication.Failure,
 	})
 	c.JSON(http.StatusOK, gin.H{"published": true})
 }

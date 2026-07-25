@@ -36,6 +36,7 @@ export interface HSMSnapshotFailureMessage {
   readonly evidenceBoundary: number;
   readonly perspectivePlayer: number;
   readonly error: string;
+  readonly failure?: Record<string, unknown>;
 }
 
 type SendCommand = (command: string, data: Record<string, unknown>) => void;
