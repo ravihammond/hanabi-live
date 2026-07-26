@@ -71,11 +71,12 @@ type CommandData struct {
 	RestartKind string `json:"restartKind"`
 
 	// Read-only temporal HSM inspection.
-	HSMTargetBoundary    int  `json:"targetBoundary"`
-	HSMEvidenceBoundary  int  `json:"evidenceBoundary"`
-	HSMPerspectivePlayer int  `json:"perspectivePlayer"`
-	HSMActorPlayer       int  `json:"actorPlayer"`
-	HSMPhysicalTruth     bool `json:"physicalTruth"`
+	HSMProtocolVersion     int    `json:"protocolVersion"`
+	HSMArchiveGenerationID uint32 `json:"archiveGenerationID"`
+	HSMClientRequestID     int    `json:"clientRequestID"`
+	HSMTargetBoundary      int    `json:"targetBoundary"`
+	HSMEvidenceBoundary    int    `json:"evidenceBoundary"`
+	HSMPerspectivePlayer   int    `json:"perspectivePlayer"`
 
 	// Used internally
 	// (a tag of "-" means that the JSON encoder will ignore the field)
@@ -126,6 +127,7 @@ func commandInit() {
 	commandMap["tableRestart"] = commandTableRestart
 	commandMap["researchRestart"] = commandResearchRestart
 	commandMap["researchHSMRequest"] = commandResearchHSMRequest
+	commandMap["researchHSMPhysicalTruthRequest"] = commandResearchHSMPhysicalTruthRequest
 	commandMap["tableUpdate"] = commandTableUpdate
 	commandMap["tableSuggest"] = commandTableSuggest
 

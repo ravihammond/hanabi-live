@@ -9,6 +9,7 @@ export * from "./interfaces/GameHistory";
 export * from "./interfaces/HTTPLoginData";
 export * from "./interfaces/Settings";
 export * from "./interfaces/Spectator";
+export * from "./researchHSM";
 export * from "./serverCommands";
 export * from "./types/GameID";
 export * from "./types/TableID";

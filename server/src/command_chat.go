@@ -45,7 +45,11 @@ func commandChat(ctx context.Context, s *Session, d *CommandData) {
 		}
 		userID = s.UserID
 	}
-	if d.Username == "" && s != nil {
+	if s != nil && !d.Server && !d.Discord {
+		// User-originated chat identity is always server-owned. In particular,
+		// a seatless research spectator must never speak as a Roster Player.
+		d.Username = s.Username
+	} else if d.Username == "" && s != nil {
 		d.Username = s.Username
 	}
 

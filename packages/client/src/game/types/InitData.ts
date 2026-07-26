@@ -36,9 +36,12 @@ export interface InitData {
   readonly researchPersistentSingleGame: boolean;
   readonly researchRestartController: boolean;
   readonly hsmDebug?: {
+    readonly protocolVersion: number;
     readonly capability: "own_perspective" | "switchable";
     readonly identity: string;
+    readonly viewerKind: "participant" | "spectator";
     readonly ownPerspective: number;
-    readonly physicalTruthAllowed: boolean;
+    readonly archiveGenerationID: number;
+    readonly physicalTruthGranted: boolean;
   };
 }

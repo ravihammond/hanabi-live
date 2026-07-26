@@ -3,6 +3,17 @@
 // e.g. in-game replays.
 
 import type { Spectator } from "@hanabi-live/data";
+import {
+  hsmPhysicalTruthFailureMessage,
+  hsmPhysicalTruthIdentity,
+  hsmPhysicalTruthMessage,
+  hsmPhysicalTruthRejectedMessage,
+  hsmResponseIdentity,
+  hsmSnapshotFailureMessage,
+  hsmSnapshotMessage,
+  hsmSnapshotRejectedMessage,
+  hsmSnapshotUnavailableMessage,
+} from "@hanabi-live/data";
 import type {
   CardIdentity,
   CardOrder,
@@ -36,13 +47,29 @@ import * as arrows from "./arrows";
 import { setSkullEnabled, setSkullNormal } from "./drawUI";
 import { getCardOrStackBase } from "./getCardOrStackBase";
 import {
-  handleHSMSnapshotFailure,
+  handleHSMPhysicalTruth,
+  handleHSMPhysicalTruthFailure,
+  handleHSMPhysicalTruthPending,
+  handleHSMPhysicalTruthRejected,
   handleHSMSnapshot,
+  handleHSMSnapshotFailure,
+  handleHSMSnapshotPending,
+  handleHSMSnapshotRejected,
+  handleHSMSnapshotUnavailable,
   initHSMInspector,
   setHSMTargetBoundary,
-  type HSMSnapshotMessage,
-  type HSMSnapshotFailureMessage,
 } from "./hsmInspector";
+import type {
+  HSMPhysicalTruthFailureMessage,
+  HSMPhysicalTruthMessage,
+  HSMPhysicalTruthPendingMessage,
+  HSMPhysicalTruthRejectedMessage,
+  HSMSnapshotFailureMessage,
+  HSMSnapshotMessage,
+  HSMSnapshotPendingMessage,
+  HSMSnapshotRejectedMessage,
+  HSMSnapshotUnavailableMessage,
+} from "./hsmInspectorContract";
 import * as hypothetical from "./hypothetical";
 import * as notes from "./notes";
 import { StateObserver } from "./reactive/StateObserver";
@@ -188,11 +215,13 @@ gameCommands.set("init", (metadata: InitData) => {
     metadata.hsmDebug === undefined
       ? null
       : {
-        ...metadata.hsmDebug,
-        tableID: metadata.tableID,
-        playerNames: metadata.playerNames,
-      },
-    (command, data) => globals.lobby.conn!.send(command, data),
+          ...metadata.hsmDebug,
+          tableID: metadata.tableID,
+          playerNames: metadata.playerNames,
+        },
+    (command, data) => {
+      globals.lobby.conn!.send(command, data);
+    },
   );
   globals.lobby.ui?.applyHSMReservedLayout();
 
@@ -314,13 +343,77 @@ gameCommands.set("gameActionList", (data: GameActionListData) => {
 });
 
 gameCommands.set("hsmSnapshot", (data: HSMSnapshotMessage) => {
-  handleHSMSnapshot(data);
+  const parsed = hsmSnapshotMessage.safeParse(data);
+  if (parsed.success) {
+    handleHSMSnapshot(parsed.data);
+  }
+});
+
+gameCommands.set("hsmSnapshotPending", (data: HSMSnapshotPendingMessage) => {
+  const parsed = hsmResponseIdentity.safeParse(data);
+  if (parsed.success) {
+    handleHSMSnapshotPending(parsed.data);
+  }
+});
+
+gameCommands.set("hsmSnapshotFailure", (data: HSMSnapshotFailureMessage) => {
+  const parsed = hsmSnapshotFailureMessage.safeParse(data);
+  if (parsed.success) {
+    handleHSMSnapshotFailure(parsed.data);
+  }
+});
+
+gameCommands.set("hsmSnapshotRejected", (data: HSMSnapshotRejectedMessage) => {
+  const parsed = hsmSnapshotRejectedMessage.safeParse(data);
+  if (parsed.success) {
+    handleHSMSnapshotRejected(parsed.data);
+  }
 });
 
 gameCommands.set(
-  "hsmSnapshotFailure",
-  (data: HSMSnapshotFailureMessage) => {
-    handleHSMSnapshotFailure(data);
+  "hsmSnapshotUnavailable",
+  (data: HSMSnapshotUnavailableMessage) => {
+    const parsed = hsmSnapshotUnavailableMessage.safeParse(data);
+    if (parsed.success) {
+      handleHSMSnapshotUnavailable(parsed.data);
+    }
+  },
+);
+
+gameCommands.set(
+  "hsmPhysicalTruthPending",
+  (data: HSMPhysicalTruthPendingMessage) => {
+    const parsed = hsmPhysicalTruthIdentity.safeParse(data);
+    if (parsed.success) {
+      handleHSMPhysicalTruthPending(parsed.data);
+    }
+  },
+);
+
+gameCommands.set("hsmPhysicalTruth", (data: HSMPhysicalTruthMessage) => {
+  const parsed = hsmPhysicalTruthMessage.safeParse(data);
+  if (parsed.success) {
+    handleHSMPhysicalTruth(parsed.data);
+  }
+});
+
+gameCommands.set(
+  "hsmPhysicalTruthFailure",
+  (data: HSMPhysicalTruthFailureMessage) => {
+    const parsed = hsmPhysicalTruthFailureMessage.safeParse(data);
+    if (parsed.success) {
+      handleHSMPhysicalTruthFailure(parsed.data);
+    }
+  },
+);
+
+gameCommands.set(
+  "hsmPhysicalTruthRejected",
+  (data: HSMPhysicalTruthRejectedMessage) => {
+    const parsed = hsmPhysicalTruthRejectedMessage.safeParse(data);
+    if (parsed.success) {
+      handleHSMPhysicalTruthRejected(parsed.data);
+    }
   },
 );
 

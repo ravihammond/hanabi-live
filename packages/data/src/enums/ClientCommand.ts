@@ -2,4 +2,6 @@
 export enum ClientCommand {
   chat = "chat",
   chatPM = "chatPM",
+  researchHSMPhysicalTruthRequest = "researchHSMPhysicalTruthRequest",
+  researchHSMRequest = "researchHSMRequest",
 }

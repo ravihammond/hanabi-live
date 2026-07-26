@@ -8,9 +8,13 @@ import (
 )
 
 func TestMainPageTitleUsesWebsiteNameInDevMode(t *testing.T) {
+	previousIsDev := isDev
+	isDev = true
+	t.Cleanup(func() {
+		isDev = previousIsDev
+	})
 	researchTestInit(t)
 	versionPath = path.Join(projectPath, "public", "js", "bundles", "version.txt")
-	isDev = true
 
 	response := httptest.NewRecorder()
 	httpServeTemplate(response, &TemplateData{

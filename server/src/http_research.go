@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -55,36 +57,40 @@ type ResearchGamePayload struct {
 }
 
 type ResearchRosterPlayer struct {
-	RosterIndex        int    `json:"roster_index"`
-	RosterPlayerID     string `json:"roster_player_id"`
-	Type               string `json:"type"`
-	Location           string `json:"location,omitempty"`
-	DisplayName        string `json:"display_name,omitempty"`
-	ModelPath          string `json:"model_path,omitempty"`
-	HSMDebugCapability string `json:"hsm_debug_capability,omitempty"`
+	RosterIndex           int                   `json:"roster_index"`
+	RosterPlayerID        string                `json:"roster_player_id"`
+	Type                  string                `json:"type"`
+	Location              string                `json:"location,omitempty"`
+	DisplayName           string                `json:"display_name,omitempty"`
+	ModelPath             string                `json:"model_path,omitempty"`
+	HSMDebugCapability    ResearchHSMCapability `json:"hsm_debug_capability,omitempty"`
+	HSMPhysicalTruthGrant bool                  `json:"hsm_physical_truth_grant,omitempty"`
 }
 
 type ResearchHSMDebugSpectator struct {
-	Identity   string `json:"identity"`
-	Capability string `json:"capability"`
+	Identity              string                `json:"identity"`
+	Capability            ResearchHSMCapability `json:"capability"`
+	HSMPhysicalTruthGrant bool                  `json:"physical_truth_grant,omitempty"`
 }
 
 type ResearchCreatePayload struct {
-	Mode                string                      `json:"mode"`
-	Game                ResearchGamePayload         `json:"game"`
-	RosterPlayers       []ResearchRosterPlayer      `json:"roster_players"`
-	SeededInitialLayout ResearchSeededInitialLayout `json:"seeded_initial_layout"`
-	HSMDebugSpectator   *ResearchHSMDebugSpectator  `json:"hsm_debug_spectator,omitempty"`
+	Mode                 string                      `json:"mode"`
+	Game                 ResearchGamePayload         `json:"game"`
+	RosterPlayers        []ResearchRosterPlayer      `json:"roster_players"`
+	SeededInitialLayout  ResearchSeededInitialLayout `json:"seeded_initial_layout"`
+	HSMDebugSpectator    *ResearchHSMDebugSpectator  `json:"hsm_debug_spectator,omitempty"`
+	HSMSemanticProfileID int                         `json:"hsm_semantic_profile_id,omitempty"`
 }
 
 type CreatedResearchSingleGame struct {
-	TableID      uint64            `json:"table_id"`
-	GameID       string            `json:"game_id"`
-	Mode         string            `json:"mode"`
-	GameSeed     int               `json:"game_seed"`
-	LayoutSource string            `json:"layout_source"`
-	SeatOrder    []int             `json:"seat_order"`
-	JoinLinks    map[string]string `json:"join_links"`
+	TableID                uint64            `json:"table_id"`
+	GameID                 string            `json:"game_id"`
+	Mode                   string            `json:"mode"`
+	GameSeed               int               `json:"game_seed"`
+	LayoutSource           string            `json:"layout_source"`
+	SeatOrder              []int             `json:"seat_order"`
+	JoinLinks              map[string]string `json:"join_links"`
+	HSMArchiveGenerationID uint32            `json:"hsm_archive_generation_id"`
 }
 
 type CreatedResearchPregameTable struct {
@@ -117,28 +123,34 @@ type OpenedResearchReplay struct {
 }
 
 type ResearchSession struct {
-	GameID                     string
-	TableID                    uint64
-	Mode                       string
-	Seed                       int
-	CurrentGameIndex           int
-	ReadyStatus                map[string]bool
-	CompletedGames             []map[string]interface{}
-	SeatOrder                  []int
-	RosterPlayerToSeatID       map[string]string
-	RosterPlayerIDsBySeat      []string
-	RosterPlayerNamesBySeat    []string
-	BotRosterPlayerIDs         map[string]bool
-	RestartControllerUserID    int
-	PendingRestartRequest      *ResearchRestartRequest
-	NextRestartRequestID       int
-	RosterPlayers              []ResearchRosterPlayer
-	IdentityDisplay            string
-	PendingHSMSnapshotRequests map[int]*ResearchHSMSnapshotRequest
-	NextHSMSnapshotRequestID   int
-	HSMLegalActionsByBoundary  map[int][]string
-	HSMActorsByBoundary        map[int]int
-	HSMMutex                   sync.Mutex
+	GameID                          string
+	TableID                         uint64
+	Mode                            string
+	Seed                            int
+	CurrentGameIndex                int
+	ReadyStatus                     map[string]bool
+	CompletedGames                  []map[string]interface{}
+	SeatOrder                       []int
+	RosterPlayerToSeatID            map[string]string
+	RosterPlayerIDsBySeat           []string
+	RosterPlayerNamesBySeat         []string
+	BotRosterPlayerIDs              map[string]bool
+	RestartControllerUserID         int
+	PendingRestartRequest           *ResearchRestartRequest
+	NextRestartRequestID            int
+	RosterPlayers                   []ResearchRosterPlayer
+	IdentityDisplay                 string
+	PendingHSMSnapshotRequests      map[int]*ResearchHSMSnapshotRequest
+	NextHSMSnapshotRequestID        int
+	PendingHSMPhysicalTruthRequests map[int]*ResearchHSMPhysicalTruthRequest
+	NextHSMPhysicalTruthRequestID   int
+	HSMArchiveGenerationID          uint32
+	HSMLegalActionsByBoundary       map[int][]string
+	HSMLegalProjectionsByBoundary   map[int]ResearchHSMLegalProjection
+	HSMActorsByBoundary             map[int]int
+	HSMSemanticProfileID            int
+	HSMDeliveryMutex                sync.Mutex
+	HSMMutex                        sync.Mutex
 }
 
 type ResearchRestartRequest struct {
@@ -147,34 +159,57 @@ type ResearchRestartRequest struct {
 }
 
 type ResearchJoinToken struct {
-	Token              string
-	GameID             string
-	TableID            uint64
-	RosterPlayerID     string
-	RosterIndex        int
-	SeatIndex          int
-	UserID             int
-	Username           string
-	HSMIdentity        string
-	HSMDebugCapability string
+	Token                 string
+	GameID                string
+	TableID               uint64
+	RosterPlayerID        string
+	RosterIndex           int
+	SeatIndex             int
+	UserID                int
+	Username              string
+	HSMPrincipalID        string
+	HSMIdentity           string
+	HSMViewerKind         ResearchHSMViewerKind
+	HSMDebugCapability    ResearchHSMCapability
+	HSMPhysicalTruthGrant bool
 }
 
 type ResearchHSMSnapshotRequest struct {
-	RequestID         int      `json:"request_id"`
-	Identity          string   `json:"identity"`
-	TargetBoundary    int      `json:"target_boundary"`
-	EvidenceBoundary  int      `json:"evidence_boundary"`
-	PerspectivePlayer int      `json:"perspective_player"`
-	ActorPlayer       int      `json:"actor_player"`
-	PhysicalTruth     bool     `json:"physical_truth"`
-	Client            *Session `json:"-"`
+	ServerRequestID          int                        `json:"server_request_id"`
+	ClientRequestID          int                        `json:"client_request_id"`
+	ArchiveGenerationID      uint32                     `json:"archive_generation_id"`
+	Identity                 string                     `json:"identity"`
+	PrincipalID              string                     `json:"-"`
+	TargetBoundary           int                        `json:"target_boundary"`
+	EvidenceBoundary         int                        `json:"evidence_boundary"`
+	PerspectivePlayer        int                        `json:"perspective_player"`
+	ActorPlayer              int                        `json:"actor_player"`
+	SemanticProfileID        int                        `json:"semantic_profile_id"`
+	AuthorityLegalProjection ResearchHSMLegalProjection `json:"authority_legal_projection"`
+	Client                   *Session                   `json:"-"`
+	DeliveryInProgress       bool                       `json:"-"`
+}
+
+type ResearchHSMPhysicalTruthRequest struct {
+	ServerRequestID     int      `json:"server_request_id"`
+	ClientRequestID     int      `json:"client_request_id"`
+	ArchiveGenerationID uint32   `json:"archive_generation_id"`
+	Identity            string   `json:"identity"`
+	PrincipalID         string   `json:"-"`
+	TargetBoundary      int      `json:"target_boundary"`
+	PerspectivePlayer   int      `json:"perspective_player"`
+	Client              *Session `json:"-"`
+	DeliveryInProgress  bool     `json:"-"`
 }
 
 type ResearchHSMDebugInit struct {
-	Capability           string `json:"capability"`
-	Identity             string `json:"identity"`
-	OwnPerspective       int    `json:"ownPerspective"`
-	PhysicalTruthAllowed bool   `json:"physicalTruthAllowed"`
+	ProtocolVersion        int                   `json:"protocolVersion"`
+	Capability             ResearchHSMCapability `json:"capability"`
+	Identity               string                `json:"identity"`
+	ViewerKind             ResearchHSMViewerKind `json:"viewerKind"`
+	OwnPerspective         int                   `json:"ownPerspective"`
+	HSMArchiveGenerationID uint32                `json:"archiveGenerationID"`
+	PhysicalTruthGranted   bool                  `json:"physicalTruthGranted"`
 }
 
 type ResearchBotActionPayload struct {
@@ -189,14 +224,30 @@ type ResearchBotAction struct {
 }
 
 type ResearchHSMSnapshotPublication struct {
-	RequestID int                    `json:"request_id"`
-	Snapshot  map[string]interface{} `json:"snapshot"`
+	ResearchHSMResponseIdentity
+	Snapshot ResearchHSMSnapshot `json:"snapshot"`
 }
 
 type ResearchHSMSnapshotFailurePublication struct {
-	RequestID int                    `json:"request_id"`
-	Error     string                 `json:"error"`
-	Failure   map[string]interface{} `json:"failure"`
+	ResearchHSMResponseIdentity
+	Error   string             `json:"error"`
+	Failure ResearchHSMFailure `json:"failure"`
+}
+
+type ResearchHSMSnapshotUnavailablePublication struct {
+	ResearchHSMResponseIdentity
+	ReasonCode string `json:"reason_code"`
+	Error      string `json:"error"`
+}
+
+type ResearchHSMPhysicalTruthPublication struct {
+	ResearchHSMPhysicalTruthIdentity
+	Overlay ResearchHSMPhysicalTruthOverlay `json:"overlay"`
+}
+
+type ResearchHSMPhysicalTruthFailurePublication struct {
+	ResearchHSMPhysicalTruthIdentity
+	Error string `json:"error"`
 }
 
 type validatedResearchLayout struct {
@@ -214,6 +265,9 @@ func registerResearchRoutes(router *gin.Engine) {
 	router.POST("/research/sessions/:gameID/restart", researchRestartSingleGame)
 	router.POST("/research/sessions/:gameID/hsm-snapshot", researchPublishHSMSnapshot)
 	router.POST("/research/sessions/:gameID/hsm-snapshot-failure", researchPublishHSMSnapshotFailure)
+	router.POST("/research/sessions/:gameID/hsm-snapshot-unavailable", researchPublishHSMSnapshotUnavailable)
+	router.POST("/research/sessions/:gameID/hsm-physical-truth", researchPublishHSMPhysicalTruth)
+	router.POST("/research/sessions/:gameID/hsm-physical-truth-failure", researchPublishHSMPhysicalTruthFailure)
 	router.GET("/research/sessions/:gameID/status", researchGetSessionStatus)
 	router.POST("/research/sessions/:gameID/bot-action", researchPostBotAction)
 	router.POST("/research/sessions/:gameID/bot-join-session", researchCreateBotJoinSession)
@@ -302,32 +356,37 @@ func researchCreateSingleGame(c *gin.Context) {
 	botRosterPlayerIDs := researchBotRosterPlayerIDs(payload.RosterPlayers)
 	joinLinks := researchRegisterJoinLinks(gameID, table.ID, payload, layout)
 	created := CreatedResearchSingleGame{
-		TableID:      table.ID,
-		GameID:       gameID,
-		Mode:         "single_game",
-		GameSeed:     gameSeed,
-		LayoutSource: "payload",
-		SeatOrder:    append([]int(nil), layout.seatOrder...),
-		JoinLinks:    joinLinks,
+		TableID:                table.ID,
+		GameID:                 gameID,
+		Mode:                   "single_game",
+		GameSeed:               gameSeed,
+		LayoutSource:           "payload",
+		SeatOrder:              append([]int(nil), layout.seatOrder...),
+		JoinLinks:              joinLinks,
+		HSMArchiveGenerationID: 1,
 	}
 	researchSessionsMutex.Lock()
 	researchSessions[gameID] = &ResearchSession{
-		GameID:                     gameID,
-		TableID:                    table.ID,
-		Mode:                       "single_game",
-		SeatOrder:                  append([]int(nil), layout.seatOrder...),
-		RosterPlayerToSeatID:       copyStringMap(layout.rosterPlayerToSeatID),
-		RosterPlayerIDsBySeat:      rosterPlayerIDsBySeat,
-		RosterPlayerNamesBySeat:    rosterPlayerNamesBySeat,
-		BotRosterPlayerIDs:         botRosterPlayerIDs,
-		Seed:                       payload.Game.Seed,
-		CurrentGameIndex:           payload.Game.GameIndex,
-		RestartControllerUserID:    researchRestartControllerUserID(table, payload, layout),
-		RosterPlayers:              append([]ResearchRosterPlayer(nil), payload.RosterPlayers...),
-		IdentityDisplay:            payload.Game.IdentityDisplay,
-		PendingHSMSnapshotRequests: make(map[int]*ResearchHSMSnapshotRequest),
-		HSMLegalActionsByBoundary:  make(map[int][]string),
-		HSMActorsByBoundary:        make(map[int]int),
+		GameID:                          gameID,
+		TableID:                         table.ID,
+		Mode:                            "single_game",
+		SeatOrder:                       append([]int(nil), layout.seatOrder...),
+		RosterPlayerToSeatID:            copyStringMap(layout.rosterPlayerToSeatID),
+		RosterPlayerIDsBySeat:           rosterPlayerIDsBySeat,
+		RosterPlayerNamesBySeat:         rosterPlayerNamesBySeat,
+		BotRosterPlayerIDs:              botRosterPlayerIDs,
+		Seed:                            payload.Game.Seed,
+		CurrentGameIndex:                payload.Game.GameIndex,
+		RestartControllerUserID:         researchRestartControllerUserID(table, payload, layout),
+		RosterPlayers:                   append([]ResearchRosterPlayer(nil), payload.RosterPlayers...),
+		IdentityDisplay:                 payload.Game.IdentityDisplay,
+		PendingHSMSnapshotRequests:      make(map[int]*ResearchHSMSnapshotRequest),
+		PendingHSMPhysicalTruthRequests: make(map[int]*ResearchHSMPhysicalTruthRequest),
+		HSMArchiveGenerationID:          1,
+		HSMLegalActionsByBoundary:       make(map[int][]string),
+		HSMLegalProjectionsByBoundary:   make(map[int]ResearchHSMLegalProjection),
+		HSMActorsByBoundary:             make(map[int]int),
+		HSMSemanticProfileID:            payload.HSMSemanticProfileID,
 	}
 	researchSessionsMutex.Unlock()
 	c.JSON(http.StatusCreated, created)
@@ -382,18 +441,29 @@ func researchCreatePregameTable(c *gin.Context) {
 
 	researchSessionsMutex.Lock()
 	researchSessions[tableID] = &ResearchSession{
-		GameID:                  tableID,
-		TableID:                 table.ID,
-		Mode:                    "pregame_table",
-		Seed:                    payload.Game.Seed,
-		CurrentGameIndex:        0,
-		ReadyStatus:             readyStatus,
-		CompletedGames:          make([]map[string]interface{}, 0),
-		SeatOrder:               append([]int(nil), layout.seatOrder...),
-		RosterPlayerToSeatID:    copyStringMap(layout.rosterPlayerToSeatID),
-		RosterPlayerIDsBySeat:   rosterPlayerIDsBySeat,
-		RosterPlayerNamesBySeat: rosterPlayerNamesBySeat,
-		BotRosterPlayerIDs:      botRosterPlayerIDs,
+		GameID:                     tableID,
+		TableID:                    table.ID,
+		Mode:                       "pregame_table",
+		Seed:                       payload.Game.Seed,
+		CurrentGameIndex:           0,
+		ReadyStatus:                readyStatus,
+		CompletedGames:             make([]map[string]interface{}, 0),
+		SeatOrder:                  append([]int(nil), layout.seatOrder...),
+		RosterPlayerToSeatID:       copyStringMap(layout.rosterPlayerToSeatID),
+		RosterPlayerIDsBySeat:      rosterPlayerIDsBySeat,
+		RosterPlayerNamesBySeat:    rosterPlayerNamesBySeat,
+		BotRosterPlayerIDs:         botRosterPlayerIDs,
+		PendingHSMSnapshotRequests: make(map[int]*ResearchHSMSnapshotRequest),
+		PendingHSMPhysicalTruthRequests: make(
+			map[int]*ResearchHSMPhysicalTruthRequest,
+		),
+		HSMArchiveGenerationID:    1,
+		HSMLegalActionsByBoundary: make(map[int][]string),
+		HSMLegalProjectionsByBoundary: make(
+			map[int]ResearchHSMLegalProjection,
+		),
+		HSMActorsByBoundary:  make(map[int]int),
+		HSMSemanticProfileID: payload.HSMSemanticProfileID,
 	}
 	researchSessionsMutex.Unlock()
 	c.JSON(http.StatusCreated, created)
@@ -572,11 +642,16 @@ func researchRestartSingleGame(c *gin.Context) {
 	)
 	researchUpdateJoinTokensForLayout(session)
 	session.PendingRestartRequest = nil
+	session.HSMDeliveryMutex.Lock()
 	session.HSMMutex.Lock()
+	session.HSMArchiveGenerationID++
 	session.PendingHSMSnapshotRequests = make(map[int]*ResearchHSMSnapshotRequest)
+	session.PendingHSMPhysicalTruthRequests = make(map[int]*ResearchHSMPhysicalTruthRequest)
 	session.HSMLegalActionsByBoundary = make(map[int][]string)
+	session.HSMLegalProjectionsByBoundary = make(map[int]ResearchHSMLegalProjection)
 	session.HSMActorsByBoundary = make(map[int]int)
 	session.HSMMutex.Unlock()
+	session.HSMDeliveryMutex.Unlock()
 	starter := table.Players[0].Session
 	tableStart(ctx, starter, &CommandData{
 		TableID:      table.ID,
@@ -664,7 +739,7 @@ func researchPublishHSMSnapshot(c *gin.Context) {
 		return
 	}
 	var publication ResearchHSMSnapshotPublication
-	if err := c.ShouldBindJSON(&publication); err != nil {
+	if err := researchDecodeStrictJSON(c, &publication); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
 		return
 	}
@@ -676,21 +751,58 @@ func researchPublishHSMSnapshot(c *gin.Context) {
 		return
 	}
 	session.HSMMutex.Lock()
-	request, ok := session.PendingHSMSnapshotRequests[publication.RequestID]
-	if !ok {
+	request, ok := session.PendingHSMSnapshotRequests[publication.ServerRequestID]
+	if !ok || !publication.matchesSnapshotRequest(request) {
 		session.HSMMutex.Unlock()
 		researchSessionsMutex.Unlock()
-		c.JSON(http.StatusNotFound, gin.H{"detail": "HSM snapshot request is not pending."})
+		c.JSON(http.StatusConflict, gin.H{"detail": "HSM snapshot response identity is not pending."})
 		return
 	}
-	delete(session.PendingHSMSnapshotRequests, publication.RequestID)
+	if err := publication.Snapshot.validateForRequest(request); err != nil {
+		session.HSMMutex.Unlock()
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
+		return
+	}
+	if request.DeliveryInProgress {
+		session.HSMMutex.Unlock()
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"detail": "HSM snapshot response delivery is already in progress."})
+		return
+	}
+	request.DeliveryInProgress = true
 	session.HSMMutex.Unlock()
 	researchSessionsMutex.Unlock()
 
-	request.Client.Emit("hsmSnapshot", gin.H{
-		"requestID": publication.RequestID,
-		"snapshot":  publication.Snapshot,
-	})
+	session.HSMDeliveryMutex.Lock()
+	session.HSMMutex.Lock()
+	current, stillPending := session.PendingHSMSnapshotRequests[publication.ServerRequestID]
+	if !stillPending || current != request ||
+		session.HSMArchiveGenerationID != request.ArchiveGenerationID {
+		session.HSMMutex.Unlock()
+		session.HSMDeliveryMutex.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"detail": "HSM snapshot response became stale before delivery."})
+		return
+	}
+	session.HSMMutex.Unlock()
+	message := hsmResponseIdentityMessage(publication.ResearchHSMResponseIdentity)
+	message["snapshot"] = publication.Snapshot
+	deliveryErr := request.Client.EmitChecked("hsmSnapshot", message)
+	session.HSMMutex.Lock()
+	current, stillPending = session.PendingHSMSnapshotRequests[publication.ServerRequestID]
+	if stillPending && current == request {
+		if deliveryErr == nil {
+			delete(session.PendingHSMSnapshotRequests, publication.ServerRequestID)
+		} else {
+			request.DeliveryInProgress = false
+		}
+	}
+	session.HSMMutex.Unlock()
+	session.HSMDeliveryMutex.Unlock()
+	if deliveryErr != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "HSM snapshot websocket delivery failed; response remains pending."})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"published": true})
 }
 
@@ -699,7 +811,7 @@ func researchPublishHSMSnapshotFailure(c *gin.Context) {
 		return
 	}
 	var publication ResearchHSMSnapshotFailurePublication
-	if err := c.ShouldBindJSON(&publication); err != nil {
+	if err := researchDecodeStrictJSON(c, &publication); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
 		return
 	}
@@ -711,26 +823,304 @@ func researchPublishHSMSnapshotFailure(c *gin.Context) {
 		return
 	}
 	session.HSMMutex.Lock()
-	request, ok := session.PendingHSMSnapshotRequests[publication.RequestID]
-	if !ok {
+	request, ok := session.PendingHSMSnapshotRequests[publication.ServerRequestID]
+	if !ok || !publication.matchesSnapshotRequest(request) {
 		session.HSMMutex.Unlock()
 		researchSessionsMutex.Unlock()
-		c.JSON(http.StatusNotFound, gin.H{"detail": "HSM snapshot request is not pending."})
+		c.JSON(http.StatusConflict, gin.H{"detail": "HSM snapshot failure identity is not pending."})
 		return
 	}
-	delete(session.PendingHSMSnapshotRequests, publication.RequestID)
+	if strings.TrimSpace(publication.Error) == "" {
+		session.HSMMutex.Unlock()
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "HSM snapshot failure error is required."})
+		return
+	}
+	if err := publication.Failure.validateForRequest(request); err != nil {
+		session.HSMMutex.Unlock()
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
+		return
+	}
+	if request.DeliveryInProgress {
+		session.HSMMutex.Unlock()
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"detail": "HSM snapshot failure delivery is already in progress."})
+		return
+	}
+	request.DeliveryInProgress = true
 	session.HSMMutex.Unlock()
 	researchSessionsMutex.Unlock()
 
-	request.Client.Emit("hsmSnapshotFailure", gin.H{
-		"requestID":         publication.RequestID,
-		"targetBoundary":    request.TargetBoundary,
-		"evidenceBoundary":  request.EvidenceBoundary,
-		"perspectivePlayer": request.PerspectivePlayer,
-		"error":             publication.Error,
-		"failure":           publication.Failure,
-	})
+	session.HSMDeliveryMutex.Lock()
+	session.HSMMutex.Lock()
+	current, stillPending := session.PendingHSMSnapshotRequests[publication.ServerRequestID]
+	if !stillPending || current != request ||
+		session.HSMArchiveGenerationID != request.ArchiveGenerationID {
+		session.HSMMutex.Unlock()
+		session.HSMDeliveryMutex.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"detail": "HSM snapshot failure became stale before delivery."})
+		return
+	}
+	session.HSMMutex.Unlock()
+	message := hsmResponseIdentityMessage(publication.ResearchHSMResponseIdentity)
+	message["error"] = publication.Error
+	message["failure"] = publication.Failure
+	deliveryErr := request.Client.EmitChecked("hsmSnapshotFailure", message)
+	session.HSMMutex.Lock()
+	current, stillPending = session.PendingHSMSnapshotRequests[publication.ServerRequestID]
+	if stillPending && current == request {
+		if deliveryErr == nil {
+			delete(session.PendingHSMSnapshotRequests, publication.ServerRequestID)
+		} else {
+			request.DeliveryInProgress = false
+		}
+	}
+	session.HSMMutex.Unlock()
+	session.HSMDeliveryMutex.Unlock()
+	if deliveryErr != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "HSM snapshot failure websocket delivery failed; response remains pending."})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"published": true})
+}
+
+func researchPublishHSMSnapshotUnavailable(c *gin.Context) {
+	if !researchRequireAdminToken(c) {
+		return
+	}
+	var publication ResearchHSMSnapshotUnavailablePublication
+	if err := researchDecodeStrictJSON(c, &publication); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
+		return
+	}
+	researchSessionsMutex.Lock()
+	session, ok := researchSessions[c.Param("gameID")]
+	if !ok {
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusNotFound, gin.H{"detail": "Research session is not valid."})
+		return
+	}
+	session.HSMMutex.Lock()
+	request, ok := session.PendingHSMSnapshotRequests[publication.ServerRequestID]
+	if !ok || !publication.matchesSnapshotRequest(request) {
+		session.HSMMutex.Unlock()
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"detail": "HSM snapshot unavailable identity is not pending."})
+		return
+	}
+	if publication.ReasonCode != researchHSMSnapshotUnavailableReasonCode ||
+		publication.Error != researchHSMSnapshotUnavailableError {
+		session.HSMMutex.Unlock()
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "HSM snapshot unavailable reason is not supported."})
+		return
+	}
+	if request.DeliveryInProgress {
+		session.HSMMutex.Unlock()
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"detail": "HSM snapshot unavailable delivery is already in progress."})
+		return
+	}
+	request.DeliveryInProgress = true
+	session.HSMMutex.Unlock()
+	researchSessionsMutex.Unlock()
+
+	session.HSMDeliveryMutex.Lock()
+	session.HSMMutex.Lock()
+	current, stillPending := session.PendingHSMSnapshotRequests[publication.ServerRequestID]
+	if !stillPending || current != request ||
+		session.HSMArchiveGenerationID != request.ArchiveGenerationID {
+		session.HSMMutex.Unlock()
+		session.HSMDeliveryMutex.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"detail": "HSM snapshot unavailable became stale before delivery."})
+		return
+	}
+	session.HSMMutex.Unlock()
+	message := hsmResponseIdentityMessage(publication.ResearchHSMResponseIdentity)
+	message["reasonCode"] = publication.ReasonCode
+	message["error"] = publication.Error
+	deliveryErr := request.Client.EmitChecked("hsmSnapshotUnavailable", message)
+	session.HSMMutex.Lock()
+	current, stillPending = session.PendingHSMSnapshotRequests[publication.ServerRequestID]
+	if stillPending && current == request {
+		if deliveryErr == nil {
+			delete(session.PendingHSMSnapshotRequests, publication.ServerRequestID)
+		} else {
+			request.DeliveryInProgress = false
+		}
+	}
+	session.HSMMutex.Unlock()
+	session.HSMDeliveryMutex.Unlock()
+	if deliveryErr != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "HSM snapshot unavailable websocket delivery failed; response remains pending."})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"published": true})
+}
+
+func researchPublishHSMPhysicalTruth(c *gin.Context) {
+	if !researchRequireAdminToken(c) {
+		return
+	}
+	var publication ResearchHSMPhysicalTruthPublication
+	if err := researchDecodeStrictJSON(c, &publication); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
+		return
+	}
+	researchSessionsMutex.Lock()
+	session, ok := researchSessions[c.Param("gameID")]
+	if !ok {
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusNotFound, gin.H{"detail": "Research session is not valid."})
+		return
+	}
+	session.HSMMutex.Lock()
+	request, ok := session.PendingHSMPhysicalTruthRequests[publication.ServerRequestID]
+	if !ok || !publication.matchesPhysicalTruthRequest(request) {
+		session.HSMMutex.Unlock()
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"detail": "Physical Truth response identity is not pending."})
+		return
+	}
+	if err := publication.Overlay.validate(); err != nil {
+		session.HSMMutex.Unlock()
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
+		return
+	}
+	if request.DeliveryInProgress {
+		session.HSMMutex.Unlock()
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"detail": "Physical Truth delivery is already in progress."})
+		return
+	}
+	request.DeliveryInProgress = true
+	session.HSMMutex.Unlock()
+	researchSessionsMutex.Unlock()
+
+	session.HSMDeliveryMutex.Lock()
+	session.HSMMutex.Lock()
+	current, stillPending := session.PendingHSMPhysicalTruthRequests[publication.ServerRequestID]
+	if !stillPending || current != request ||
+		session.HSMArchiveGenerationID != request.ArchiveGenerationID {
+		session.HSMMutex.Unlock()
+		session.HSMDeliveryMutex.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"detail": "Physical Truth response became stale before delivery."})
+		return
+	}
+	session.HSMMutex.Unlock()
+	message := hsmPhysicalTruthIdentityMessage(publication.ResearchHSMPhysicalTruthIdentity)
+	message["overlay"] = publication.Overlay
+	deliveryErr := request.Client.EmitChecked("hsmPhysicalTruth", message)
+	session.HSMMutex.Lock()
+	current, stillPending = session.PendingHSMPhysicalTruthRequests[publication.ServerRequestID]
+	if stillPending && current == request {
+		if deliveryErr == nil {
+			delete(session.PendingHSMPhysicalTruthRequests, publication.ServerRequestID)
+		} else {
+			request.DeliveryInProgress = false
+		}
+	}
+	session.HSMMutex.Unlock()
+	session.HSMDeliveryMutex.Unlock()
+	if deliveryErr != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "Physical Truth websocket delivery failed; response remains pending."})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"published": true})
+}
+
+func researchPublishHSMPhysicalTruthFailure(c *gin.Context) {
+	if !researchRequireAdminToken(c) {
+		return
+	}
+	var publication ResearchHSMPhysicalTruthFailurePublication
+	if err := researchDecodeStrictJSON(c, &publication); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
+		return
+	}
+	researchSessionsMutex.Lock()
+	session, ok := researchSessions[c.Param("gameID")]
+	if !ok {
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusNotFound, gin.H{"detail": "Research session is not valid."})
+		return
+	}
+	session.HSMMutex.Lock()
+	request, ok := session.PendingHSMPhysicalTruthRequests[publication.ServerRequestID]
+	if !ok || !publication.matchesPhysicalTruthRequest(request) {
+		session.HSMMutex.Unlock()
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"detail": "Physical Truth failure identity is not pending."})
+		return
+	}
+	if strings.TrimSpace(publication.Error) == "" {
+		session.HSMMutex.Unlock()
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "Physical Truth failure error is required."})
+		return
+	}
+	if request.DeliveryInProgress {
+		session.HSMMutex.Unlock()
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"detail": "Physical Truth failure delivery is already in progress."})
+		return
+	}
+	request.DeliveryInProgress = true
+	session.HSMMutex.Unlock()
+	researchSessionsMutex.Unlock()
+
+	session.HSMDeliveryMutex.Lock()
+	session.HSMMutex.Lock()
+	current, stillPending := session.PendingHSMPhysicalTruthRequests[publication.ServerRequestID]
+	if !stillPending || current != request ||
+		session.HSMArchiveGenerationID != request.ArchiveGenerationID {
+		session.HSMMutex.Unlock()
+		session.HSMDeliveryMutex.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"detail": "Physical Truth failure became stale before delivery."})
+		return
+	}
+	session.HSMMutex.Unlock()
+	message := hsmPhysicalTruthIdentityMessage(publication.ResearchHSMPhysicalTruthIdentity)
+	message["error"] = publication.Error
+	deliveryErr := request.Client.EmitChecked("hsmPhysicalTruthFailure", message)
+	session.HSMMutex.Lock()
+	current, stillPending = session.PendingHSMPhysicalTruthRequests[publication.ServerRequestID]
+	if stillPending && current == request {
+		if deliveryErr == nil {
+			delete(session.PendingHSMPhysicalTruthRequests, publication.ServerRequestID)
+		} else {
+			request.DeliveryInProgress = false
+		}
+	}
+	session.HSMMutex.Unlock()
+	session.HSMDeliveryMutex.Unlock()
+	if deliveryErr != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"detail": "Physical Truth failure websocket delivery failed; response remains pending."})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"published": true})
+}
+
+func researchDecodeStrictJSON(c *gin.Context, destination interface{}) error {
+	mediaType, _, err := mime.ParseMediaType(c.GetHeader("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		return fmt.Errorf("Content-Type must be application/json")
+	}
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		return err
+	}
+	var trailing interface{}
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("request body must contain exactly one JSON document")
+		}
+		return fmt.Errorf("invalid trailing JSON content: %w", err)
+	}
+	return nil
 }
 
 func researchCreateBotJoinSession(c *gin.Context) {
@@ -922,18 +1312,30 @@ func researchHSMDebugInitForUser(userID int) *ResearchHSMDebugInit {
 	researchSessionsMutex.Lock()
 	defer researchSessionsMutex.Unlock()
 	join, ok := researchGuestUsers[userID]
-	if !ok || join.HSMDebugCapability == "" || join.HSMDebugCapability == "none" {
+	if !ok ||
+		(join.HSMDebugCapability != ResearchHSMCapabilityOwnPerspective &&
+			join.HSMDebugCapability != ResearchHSMCapabilitySwitchable) {
 		return nil
 	}
+	session, ok := researchSessions[join.GameID]
+	if !ok {
+		return nil
+	}
+	session.HSMMutex.Lock()
+	generationID := session.HSMArchiveGenerationID
+	session.HSMMutex.Unlock()
 	ownPerspective := join.SeatIndex
 	if ownPerspective < 0 {
 		ownPerspective = 0
 	}
 	return &ResearchHSMDebugInit{
-		Capability:           join.HSMDebugCapability,
-		Identity:             join.HSMIdentity,
-		OwnPerspective:       ownPerspective,
-		PhysicalTruthAllowed: join.HSMDebugCapability == "switchable",
+		ProtocolVersion:        ResearchHSMProtocolVersion,
+		Capability:             join.HSMDebugCapability,
+		Identity:               join.HSMIdentity,
+		ViewerKind:             join.HSMViewerKind,
+		OwnPerspective:         ownPerspective,
+		HSMArchiveGenerationID: generationID,
+		PhysicalTruthGranted:   join.HSMPhysicalTruthGrant,
 	}
 }
 
@@ -966,6 +1368,42 @@ func validateResearchPayload(payload ResearchCreatePayload) (*validatedResearchL
 	if err := validateResearchRoster(payload.RosterPlayers); err != nil {
 		return nil, err
 	}
+	hsmViewerConfigured := false
+	for _, player := range payload.RosterPlayers {
+		if player.HSMDebugCapability == ResearchHSMCapabilityOwnPerspective ||
+			player.HSMDebugCapability == ResearchHSMCapabilitySwitchable ||
+			player.HSMPhysicalTruthGrant {
+			hsmViewerConfigured = true
+			break
+		}
+	}
+	if spectator := payload.HSMDebugSpectator; spectator != nil {
+		hsmViewerConfigured = true
+		if strings.TrimSpace(spectator.Identity) == "" {
+			return nil, fmt.Errorf("HSM Debug Spectator must include a non-empty identity.")
+		}
+		if !spectator.Capability.valid() {
+			return nil, fmt.Errorf("HSM Debug Spectator capability is not valid.")
+		}
+		if spectator.Capability == ResearchHSMCapabilityOwnPerspective {
+			return nil, fmt.Errorf("A seatless HSM Debug Spectator cannot have own-perspective authority.")
+		}
+		if spectator.HSMPhysicalTruthGrant &&
+			spectator.Capability != ResearchHSMCapabilitySwitchable {
+			return nil, fmt.Errorf("HSM Debug Spectator Physical Truth requires HSM Debug authorization.")
+		}
+		for _, player := range payload.RosterPlayers {
+			if spectator.Identity == player.RosterPlayerID {
+				return nil, fmt.Errorf("HSM Debug Spectator identity must be unique within the run.")
+			}
+		}
+	}
+	if payload.Mode == "pregame_table" && hsmViewerConfigured {
+		return nil, fmt.Errorf("HSM Debug is not available in pregame_table mode.")
+	}
+	if hsmViewerConfigured && payload.HSMSemanticProfileID <= 0 {
+		return nil, fmt.Errorf("HSM Debug requires hsm_semantic_profile_id.")
+	}
 	if payload.Game.GameSeed == nil && payload.Mode == "single_game" {
 		return nil, fmt.Errorf("Payload must include game.game_seed metadata.")
 	}
@@ -992,6 +1430,14 @@ func validateResearchRoster(players []ResearchRosterPlayer) error {
 		seenIDs[player.RosterPlayerID] = true
 		if player.Type != "human" && player.Type != "bot" {
 			return fmt.Errorf("Roster Player type must be human or bot.")
+		}
+		if !player.HSMDebugCapability.valid() {
+			return fmt.Errorf("Roster Player HSM Debug capability is not valid.")
+		}
+		if player.HSMPhysicalTruthGrant &&
+			player.HSMDebugCapability != ResearchHSMCapabilityOwnPerspective &&
+			player.HSMDebugCapability != ResearchHSMCapabilitySwitchable {
+			return fmt.Errorf("Roster Player Physical Truth requires HSM Debug authorization.")
 		}
 	}
 	return nil
@@ -1149,16 +1595,19 @@ func researchRegisterJoinLinks(gameID string, tableID uint64, payload ResearchCr
 		}
 		token := researchNewJoinToken()
 		join := &ResearchJoinToken{
-			Token:              token,
-			GameID:             gameID,
-			TableID:            tableID,
-			RosterPlayerID:     player.RosterPlayerID,
-			RosterIndex:        player.RosterIndex,
-			SeatIndex:          seatIndex,
-			UserID:             researchUserIDForTableSeat(tableID, seatIndex),
-			Username:           researchDisplayName(payload.Game.IdentityDisplay, player, seatIndex),
-			HSMIdentity:        player.RosterPlayerID,
-			HSMDebugCapability: player.HSMDebugCapability,
+			Token:                 token,
+			GameID:                gameID,
+			TableID:               tableID,
+			RosterPlayerID:        player.RosterPlayerID,
+			RosterIndex:           player.RosterIndex,
+			SeatIndex:             seatIndex,
+			UserID:                researchUserIDForTableSeat(tableID, seatIndex),
+			Username:              researchDisplayName(payload.Game.IdentityDisplay, player, seatIndex),
+			HSMPrincipalID:        researchNewJoinToken(),
+			HSMIdentity:           player.RosterPlayerID,
+			HSMViewerKind:         ResearchHSMViewerKindParticipant,
+			HSMDebugCapability:    player.HSMDebugCapability,
+			HSMPhysicalTruthGrant: player.HSMPhysicalTruthGrant,
 		}
 		researchJoinTokens[token] = join
 		researchGuestUsers[join.UserID] = join
@@ -1168,16 +1617,19 @@ func researchRegisterJoinLinks(gameID string, tableID uint64, payload ResearchCr
 		token := researchNewJoinToken()
 		userID := researchUserIDForTableSeat(tableID, len(layout.seatOrder)+1)
 		join := &ResearchJoinToken{
-			Token:              token,
-			GameID:             gameID,
-			TableID:            tableID,
-			RosterPlayerID:     spectator.Identity,
-			RosterIndex:        -1,
-			SeatIndex:          -1,
-			UserID:             userID,
-			Username:           "HSM Debug Spectator",
-			HSMIdentity:        spectator.Identity,
-			HSMDebugCapability: spectator.Capability,
+			Token:                 token,
+			GameID:                gameID,
+			TableID:               tableID,
+			RosterPlayerID:        spectator.Identity,
+			RosterIndex:           -1,
+			SeatIndex:             -1,
+			UserID:                userID,
+			Username:              "HSM Debug Spectator",
+			HSMPrincipalID:        researchNewJoinToken(),
+			HSMIdentity:           spectator.Identity,
+			HSMViewerKind:         ResearchHSMViewerKindSpectator,
+			HSMDebugCapability:    spectator.Capability,
+			HSMPhysicalTruthGrant: spectator.HSMPhysicalTruthGrant,
 		}
 		researchJoinTokens[token] = join
 		researchGuestUsers[userID] = join
@@ -1304,12 +1756,22 @@ func researchSessionStatus(session *ResearchSession) gin.H {
 	for _, request := range session.PendingHSMSnapshotRequests {
 		requests = append(requests, request)
 	}
+	physicalTruthRequests := make([]*ResearchHSMPhysicalTruthRequest, 0, len(session.PendingHSMPhysicalTruthRequests))
+	for _, request := range session.PendingHSMPhysicalTruthRequests {
+		physicalTruthRequests = append(physicalTruthRequests, request)
+	}
 	legalActionsByBoundary := make(map[int][]string, len(session.HSMLegalActionsByBoundary))
 	for boundary, actions := range session.HSMLegalActionsByBoundary {
 		legalActionsByBoundary[boundary] = append([]string(nil), actions...)
 	}
+	archiveGenerationID := session.HSMArchiveGenerationID
 	session.HSMMutex.Unlock()
-	sort.Slice(requests, func(i, j int) bool { return requests[i].RequestID < requests[j].RequestID })
+	sort.Slice(requests, func(i, j int) bool {
+		return requests[i].ServerRequestID < requests[j].ServerRequestID
+	})
+	sort.Slice(physicalTruthRequests, func(i, j int) bool {
+		return physicalTruthRequests[i].ServerRequestID < physicalTruthRequests[j].ServerRequestID
+	})
 	status := gin.H{
 		"game_id":                       session.GameID,
 		"paused":                        false,
@@ -1325,6 +1787,8 @@ func researchSessionStatus(session *ResearchSession) gin.H {
 		"timeout_action_taken":          false,
 		"last_action":                   nil,
 		"hsm_snapshot_requests":         requests,
+		"hsm_physical_truth_requests":   physicalTruthRequests,
+		"hsm_archive_generation_id":     archiveGenerationID,
 		"hsm_legal_actions_by_boundary": legalActionsByBoundary,
 	}
 	if session.TableID != 0 {

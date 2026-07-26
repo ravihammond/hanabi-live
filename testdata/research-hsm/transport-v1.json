@@ -1,0 +1,479 @@
+{
+  "protocolVersion": 1,
+  "snapshotPending": {
+    "protocolVersion": 1,
+    "serverRequestID": 111,
+    "clientRequestID": 1,
+    "archiveGenerationID": 7,
+    "targetBoundary": 0,
+    "evidenceBoundary": 0,
+    "perspectivePlayer": 0,
+    "semanticProfileID": 3,
+    "authorityLegalProjectionDigest": "sha256:3e3cbf9e89295b63a6ab6e66420208c72fca6ee835aacdd34f3a28d0f97b83aa"
+  },
+  "snapshotMessage": {
+    "protocolVersion": 1,
+    "serverRequestID": 111,
+    "clientRequestID": 1,
+    "archiveGenerationID": 7,
+    "targetBoundary": 0,
+    "evidenceBoundary": 0,
+    "perspectivePlayer": 0,
+    "semanticProfileID": 3,
+    "authorityLegalProjectionDigest": "sha256:3e3cbf9e89295b63a6ab6e66420208c72fca6ee835aacdd34f3a28d0f97b83aa",
+    "snapshot": {
+      "generation_id": 7,
+      "target_boundary": 0,
+      "evidence_boundary": 0,
+      "perspective_player": 0,
+      "semantic_profile_id": 3,
+      "authority_legal_action_projection": [
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "aggregate_action_classifications": [
+        {
+          "action_id": 3,
+          "classifier": "hierarchy-resolved",
+          "follow": false,
+          "violation": true
+        }
+      ],
+      "mistaken_actions": [
+        {
+          "transition_index": 0,
+          "historical_actor": 0,
+          "action_id": 3,
+          "violating_classifiers": ["save-principle"]
+        }
+      ],
+      "diagnoses": [
+        {
+          "label": "hsm-diagnosis:3cb5011f631a9ea42c9dce82bd03a72414557afc09f8e86e487cd2938bcc6b2d",
+          "physical_guard": {
+            "world_ids": [0, 1],
+            "evidence_boundary": 0,
+            "semantic_profile_id": 3
+          },
+          "applications": [
+            {
+              "source_transition": 0,
+              "historical_actor": 0,
+              "outer_observer": 0,
+              "rule": "focused-clue",
+              "meaning": "play",
+              "subject_kind": "stable-card",
+              "subject_id": 12,
+              "provenance_id": 71,
+              "applicable": true
+            }
+          ],
+          "card_beliefs": [
+            {
+              "stable_card_id": 12,
+              "candidate_identity_mask": 3,
+              "reason_identity_masks": [
+                {
+                  "reason": "direct-clue",
+                  "identity_mask": 1
+                },
+                {
+                  "reason": "play-connection",
+                  "identity_mask": 2
+                }
+              ]
+            }
+          ],
+          "play_connections": [
+            {
+              "source_transition": 0,
+              "available_from_boundary": 0,
+              "provenance_id": 71,
+              "focus_card_id": 12,
+              "focus_identity_mask": 1,
+              "prerequisites": [
+                {
+                  "stable_card_id": 8,
+                  "identity_mask": 4
+                },
+                {
+                  "stable_card_id": 9,
+                  "identity_mask": 8
+                }
+              ]
+            }
+          ],
+          "connection_obligations": [
+            {
+              "source_transition": 0,
+              "available_from_boundary": 0,
+              "provenance_id": 72,
+              "kind": "prompt",
+              "owner_player": 1,
+              "focus_card_id": 12,
+              "focus_identity_mask": 1,
+              "current_candidate_index": 0,
+              "candidates": [
+                {
+                  "stable_card_id": 8,
+                  "identity_mask": 4
+                },
+                {
+                  "stable_card_id": 9,
+                  "identity_mask": 8
+                }
+              ]
+            }
+          ],
+          "classifications": [
+            {
+              "action_id": 3,
+              "classifier": "focused-clue",
+              "follow": true,
+              "violation": false
+            }
+          ],
+          "semantic_values": [
+            {
+              "action_id": 3,
+              "category": "meaning",
+              "name": "play",
+              "active": true
+            }
+          ]
+        },
+        {
+          "label": "hsm-diagnosis:d68bed72f56bb7cb69f53d4d21b7f48356871fbebd09f6f64bdb5940ca183ada",
+          "physical_guard": {
+            "world_ids": [2],
+            "evidence_boundary": 0,
+            "semantic_profile_id": 3
+          },
+          "applications": [
+            {
+              "source_transition": 0,
+              "historical_actor": 0,
+              "outer_observer": 0,
+              "rule": "save-principle",
+              "meaning": "save",
+              "subject_kind": "stable-card",
+              "subject_id": 13,
+              "provenance_id": 81,
+              "applicable": true
+            }
+          ],
+          "card_beliefs": [
+            {
+              "stable_card_id": 13,
+              "candidate_identity_mask": 24,
+              "reason_identity_masks": [
+                {
+                  "reason": "save-focus",
+                  "identity_mask": 24
+                }
+              ]
+            }
+          ],
+          "play_connections": [],
+          "connection_obligations": [],
+          "classifications": [
+            {
+              "action_id": 3,
+              "classifier": "save-principle",
+              "follow": false,
+              "violation": true
+            }
+          ],
+          "semantic_values": [
+            {
+              "action_id": 3,
+              "category": "meaning",
+              "name": "save",
+              "active": true
+            }
+          ]
+        }
+      ],
+      "consensus": {
+        "applications": [
+          {
+            "source_transition": 0,
+            "historical_actor": 0,
+            "outer_observer": 0,
+            "rule": "clue-convention",
+            "meaning": "intentional-clue",
+            "subject_kind": "transition",
+            "subject_id": 0,
+            "provenance_id": 60,
+            "applicable": true
+          }
+        ],
+        "card_beliefs": [
+          {
+            "stable_card_id": 12,
+            "candidate_identity_mask": 1,
+            "reason_identity_masks": [
+              {
+                "reason": "direct-clue",
+                "identity_mask": 1
+              }
+            ]
+          }
+        ],
+        "play_connections": [
+          {
+            "source_transition": 0,
+            "available_from_boundary": 0,
+            "provenance_id": 71,
+            "focus_card_id": 12,
+            "focus_identity_mask": 1,
+            "prerequisites": [
+              {
+                "stable_card_id": 8,
+                "identity_mask": 4
+              },
+              {
+                "stable_card_id": 9,
+                "identity_mask": 8
+              }
+            ]
+          }
+        ],
+        "connection_obligations": [
+          {
+            "source_transition": 0,
+            "available_from_boundary": 0,
+            "provenance_id": 72,
+            "kind": "prompt",
+            "owner_player": 1,
+            "focus_card_id": 12,
+            "focus_identity_mask": 1,
+            "current_candidate_index": 0,
+            "candidates": [
+              {
+                "stable_card_id": 8,
+                "identity_mask": 4
+              },
+              {
+                "stable_card_id": 9,
+                "identity_mask": 8
+              }
+            ]
+          }
+        ],
+        "classifications": [],
+        "semantic_values": [
+          {
+            "action_id": 3,
+            "category": "intent",
+            "name": "intentional-clue",
+            "active": true
+          }
+        ]
+      },
+      "violation_warnings": [
+        {
+          "action_id": 3,
+          "diagnosis_count": 1,
+          "total_diagnoses": 2
+        }
+      ],
+      "action_time_classification": {
+        "generation_id": 7,
+        "target_boundary": 0,
+        "evidence_boundary": 0,
+        "perspective_player": 0,
+        "semantic_profile_id": 3,
+        "selected_action_id": 3,
+        "final_follow": true,
+        "final_violation": false,
+        "rule_follow": [true, false],
+        "rule_violation": [false, false]
+      },
+      "plain_text": "[hsm] two correlated diagnoses with observer-relative semantics"
+    }
+  },
+  "snapshotFailure": {
+    "protocolVersion": 1,
+    "serverRequestID": 111,
+    "clientRequestID": 1,
+    "archiveGenerationID": 7,
+    "targetBoundary": 0,
+    "evidenceBoundary": 0,
+    "perspectivePlayer": 0,
+    "semanticProfileID": 3,
+    "authorityLegalProjectionDigest": "sha256:3e3cbf9e89295b63a6ab6e66420208c72fca6ee835aacdd34f3a28d0f97b83aa",
+    "error": "Exact HSM evaluation failed.",
+    "failure": {
+      "category": "semantic_program_unsatisfiable",
+      "phase": "exact_solving",
+      "topology_id": 2,
+      "capacity_manifest_id": "manifest-v1",
+      "semantic_program_id": "sha256:0aa06d6cad330fb09d2520a6d35fc79c2f3086f3eb0e08f32a447c485b637bda",
+      "semantic_profile_id": 3,
+      "legal_action_projection": [
+        false,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "unsatisfiable_core": {
+        "count": 1,
+        "valid": [true],
+        "coordinate_kind": [2],
+        "transition_index": [0],
+        "rule_index": [1],
+        "subject_index": [12],
+        "evidence_boundary": [0],
+        "provenance_id": [71],
+        "subset_minimal": true
+      }
+    }
+  },
+  "snapshotRejected": {
+    "protocolVersion": 1,
+    "clientRequestID": 1,
+    "archiveGenerationID": 7,
+    "targetBoundary": 0,
+    "evidenceBoundary": 0,
+    "perspectivePlayer": 0,
+    "reasonCode": "superseded"
+  },
+  "physicalTruthPending": {
+    "protocolVersion": 1,
+    "serverRequestID": 211,
+    "clientRequestID": 1,
+    "archiveGenerationID": 7,
+    "targetBoundary": 0,
+    "perspectivePlayer": 0
+  },
+  "physicalTruthMessage": {
+    "protocolVersion": 1,
+    "serverRequestID": 211,
+    "clientRequestID": 1,
+    "archiveGenerationID": 7,
+    "targetBoundary": 0,
+    "perspectivePlayer": 0,
+    "overlay": {
+      "cards": [
+        {
+          "stableCardID": 12,
+          "identity": 4
+        },
+        {
+          "stableCardID": 13,
+          "identity": 8
+        }
+      ]
+    }
+  },
+  "physicalTruthFailure": {
+    "protocolVersion": 1,
+    "serverRequestID": 211,
+    "clientRequestID": 1,
+    "archiveGenerationID": 7,
+    "targetBoundary": 0,
+    "perspectivePlayer": 0,
+    "error": "Physical Truth could not be materialized."
+  },
+  "physicalTruthRejected": {
+    "protocolVersion": 1,
+    "clientRequestID": 1,
+    "archiveGenerationID": 7,
+    "targetBoundary": 0,
+    "perspectivePlayer": 0,
+    "reasonCode": "superseded"
+  }
+}

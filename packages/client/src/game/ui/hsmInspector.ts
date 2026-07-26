@@ -1,45 +1,56 @@
-type HSMDebugCapability = "own_perspective" | "switchable";
+import {
+  HSM_PROTOCOL_VERSION,
+  type HSMActionTimeClassification,
+  type HSMCardBelief,
+  type HSMClassification,
+  type HSMConnectionObligation,
+  type HSMConventionApplication,
+  type HSMDebugInit,
+  type HSMDiagnosis,
+  type HSMDiagnosticProjection,
+  type HSMMistakenAction,
+  type HSMPhysicalTruthFailureMessage,
+  type HSMPhysicalTruthMessage,
+  type HSMPhysicalTruthOverlay,
+  type HSMPhysicalTruthPendingMessage,
+  type HSMPhysicalTruthRejectedMessage,
+  type HSMPlayConnection,
+  type HSMSemanticValue,
+  type HSMSnapshot,
+  type HSMSnapshotFailureMessage,
+  type HSMSnapshotMessage,
+  type HSMSnapshotPendingMessage,
+  type HSMSnapshotRejectedMessage,
+  type HSMSnapshotUnavailableMessage,
+  type HSMViolationWarning,
+  type SendHSMCommand,
+} from "./hsmInspectorContract";
+import {
+  bindPendingPhysicalTruth,
+  bindPendingSnapshot,
+  HSMRequestTimeouts,
+  matchesPendingPhysicalTruthRejection,
+  matchesPendingPhysicalTruthResponse,
+  matchesPendingSnapshotRejection,
+  matchesPendingSnapshotResponse,
+  type PendingHSMPhysicalTruth,
+  type PendingHSMResponse,
+} from "./hsmInspectorCorrelation";
 
-export interface HSMDebugInit {
-  readonly tableID: number;
-  readonly capability: HSMDebugCapability;
-  readonly identity: string;
-  readonly ownPerspective: number;
-  readonly playerNames: readonly string[];
-  readonly physicalTruthAllowed: boolean;
-}
-
-interface HSMSnapshot {
-  readonly targetBoundary: number;
-  readonly evidenceBoundary: number;
-  readonly perspectivePlayer?: number;
-  readonly actionTimeClassification: string | null;
-  readonly diagnosticInterpretation: string;
-  readonly cards: readonly Record<string, unknown>[];
-  readonly legalActions: readonly Record<string, unknown>[];
-  readonly ruleRows: readonly Record<string, unknown>[];
-  readonly relaxedSources: readonly string[];
-  readonly solver: Record<string, unknown>;
-  readonly capacity: Record<string, unknown>;
-  readonly plainText: string;
-  readonly physicalTruth?: Record<string, unknown>;
-}
-
-export interface HSMSnapshotMessage {
-  readonly requestID: number;
-  readonly snapshot: HSMSnapshot;
-}
-
-export interface HSMSnapshotFailureMessage {
-  readonly requestID: number;
-  readonly targetBoundary: number;
-  readonly evidenceBoundary: number;
-  readonly perspectivePlayer: number;
-  readonly error: string;
-  readonly failure?: Record<string, unknown>;
-}
-
-type SendCommand = (command: string, data: Record<string, unknown>) => void;
+export type {
+  HSMDebugInit,
+  HSMFailure,
+  HSMPhysicalTruthFailureMessage,
+  HSMPhysicalTruthMessage,
+  HSMPhysicalTruthPendingMessage,
+  HSMPhysicalTruthRejectedMessage,
+  HSMSnapshot,
+  HSMSnapshotFailureMessage,
+  HSMSnapshotMessage,
+  HSMSnapshotPendingMessage,
+  HSMSnapshotRejectedMessage,
+  HSMSnapshotUnavailableMessage,
+} from "./hsmInspectorContract";
 
 interface InspectorState {
   targetBoundary: number;
@@ -51,7 +62,13 @@ interface InspectorState {
   followActor: boolean;
   historical: boolean;
   drawerOpen: boolean;
+  nextClientRequestID: number;
+  pendingSnapshot: PendingHSMResponse | null;
   physicalTruth: boolean;
+  nextPhysicalTruthClientRequestID: number;
+  pendingPhysicalTruth: PendingHSMPhysicalTruth | null;
+  physicalTruthOverlay: HSMPhysicalTruthOverlay | null;
+  physicalTruthFailure: string | null;
   cardLabels: "badges" | "summary" | "off";
   selectedCardID: number | null;
   selectedActionID: number | null;
@@ -66,13 +83,14 @@ interface InspectorPreferences {
 }
 
 let config: HSMDebugInit | null = null;
-let sendCommand: SendCommand | null = null;
+let sendCommand: SendHSMCommand | null = null;
 let root: HTMLElement | null = null;
 let state: InspectorState | null = null;
+const requestTimeouts = new HSMRequestTimeouts();
 
 export function initHSMInspector(
   debug: HSMDebugInit | null,
-  send: SendCommand,
+  send: SendHSMCommand,
 ): void {
   if (debug === null) {
     destroyHSMInspector();
@@ -87,6 +105,19 @@ export function initHSMInspector(
     removePreferences(previousPreferenceKey);
   }
   teardownHSMInspector();
+  if (debug.protocolVersion !== HSM_PROTOCOL_VERSION) {
+    root = document.createElement("div");
+    root.id = "hsm-debug-root";
+    root.append(
+      textElement(
+        "div",
+        `HSM Debug unavailable: protocol ${debug.protocolVersion} is not supported.`,
+        "hsm-debug-unavailable",
+      ),
+    );
+    document.body.append(root);
+    return;
+  }
   const preferences = loadPreferences(nextPreferenceKey);
   config = debug;
   sendCommand = send;
@@ -100,7 +131,13 @@ export function initHSMInspector(
     followActor: debug.capability === "switchable",
     historical: true,
     drawerOpen: preferences?.drawerOpen ?? true,
+    nextClientRequestID: 0,
+    pendingSnapshot: null,
     physicalTruth: false,
+    nextPhysicalTruthClientRequestID: 0,
+    pendingPhysicalTruth: null,
+    physicalTruthOverlay: null,
+    physicalTruthFailure: null,
     cardLabels: preferences?.cardLabels ?? "badges",
     selectedCardID: null,
     selectedActionID: null,
@@ -124,15 +161,18 @@ export function destroyHSMInspector(): void {
   }
 }
 
-function teardownHSMInspector(): void {
+function teardownHSMInspector() {
+  requestTimeouts.clearAll();
   root?.remove();
   root = null;
   config = null;
   sendCommand = null;
   state = null;
-  document.body.classList.remove("hsm-inspector-open");
-  document.body.classList.remove("hsm-inspection-read-only");
-  document.body.classList.remove("hsm-debug-authorized");
+  document.body.classList.remove(
+    "hsm-inspector-open",
+    "hsm-inspection-read-only",
+    "hsm-debug-authorized",
+  );
 }
 
 export function getHSMInspectorReservedWidth(): number {
@@ -154,7 +194,7 @@ export function isHSMInspectionReadOnly(): boolean {
     return false;
   }
   return (
-    config.identity === "hsm_debug_spectator"
+    config.viewerKind === "spectator"
     || state.perspectivePlayer !== config.ownPerspective
     || state.targetBoundary !== state.maxBoundary
   );
@@ -186,41 +226,53 @@ export function setHSMTargetBoundary(
   if (state.followActor) {
     state.perspectivePlayer = actorPlayer;
   }
-  if (state.historical) {
-    state.evidenceBoundary = state.targetBoundary;
-  } else {
-    state.evidenceBoundary = Math.max(
-      state.targetBoundary,
-      state.evidenceBoundary,
-    );
-  }
+  state.evidenceBoundary = state.historical
+    ? state.targetBoundary
+    : Math.max(state.targetBoundary, state.evidenceBoundary);
   state.snapshot = null;
+  state.pendingPhysicalTruth = null;
+  requestTimeouts.clearPhysicalTruth();
+  state.physicalTruthOverlay = null;
+  state.physicalTruthFailure = null;
   state.selectedCardID = null;
   state.selectedActionID = null;
   state.loading = true;
   state.failure = null;
   render();
   requestSnapshot();
+  requestPhysicalTruth();
 }
 
-export function handleHSMSnapshot(message: HSMSnapshotMessage): void {
+export function handleHSMSnapshotPending(
+  message: HSMSnapshotPendingMessage,
+): void {
   if (state === null) {
     return;
   }
-  const { snapshot } = message;
-  if (
-    snapshot.targetBoundary !== state.targetBoundary
-    || snapshot.evidenceBoundary !== state.evidenceBoundary
-    || (snapshot.perspectivePlayer !== undefined
-      && snapshot.perspectivePlayer !== state.perspectivePlayer)
-    || (snapshot.physicalTruth !== undefined) !== state.physicalTruth
-  ) {
+  const pending = state.pendingSnapshot;
+  if (pending === null) {
     return;
   }
+  const bound = bindPendingSnapshot(message, pending);
+  if (bound !== null) {
+    state.pendingSnapshot = bound;
+  }
+}
+
+export function handleHSMSnapshot(message: HSMSnapshotMessage): void {
+  if (state === null || state.pendingSnapshot === null) {
+    return;
+  }
+  if (!matchesPendingSnapshotResponse(message, state.pendingSnapshot)) {
+    return;
+  }
+  const { snapshot } = message;
   state.snapshot = snapshot;
+  state.pendingSnapshot = null;
   state.selectedActionID = null;
   state.loading = false;
   state.failure = null;
+  requestTimeouts.clearSnapshot();
   render();
 }
 
@@ -229,36 +281,205 @@ export function handleHSMSnapshotFailure(
 ): void {
   if (
     state === null
-    || message.targetBoundary !== state.targetBoundary
-    || message.evidenceBoundary !== state.evidenceBoundary
-    || message.perspectivePlayer !== state.perspectivePlayer
+    || state.pendingSnapshot === null
+    || !matchesPendingSnapshotResponse(message, state.pendingSnapshot)
   ) {
     return;
   }
   state.snapshot = null;
+  state.pendingSnapshot = null;
   state.loading = false;
   state.failure = message.error;
+  requestTimeouts.clearSnapshot();
   render();
 }
 
-function requestSnapshot(): void {
+export function handleHSMSnapshotUnavailable(
+  message: HSMSnapshotUnavailableMessage,
+): void {
+  if (
+    state === null
+    || state.pendingSnapshot === null
+    || !matchesPendingSnapshotResponse(message, state.pendingSnapshot)
+  ) {
+    return;
+  }
+  state.snapshot = null;
+  state.pendingSnapshot = null;
+  state.selectedActionID = null;
+  state.loading = false;
+  state.failure = message.error;
+  requestTimeouts.clearSnapshot();
+  render();
+}
+
+export function handleHSMSnapshotRejected(
+  message: HSMSnapshotRejectedMessage,
+): void {
+  if (
+    state === null
+    || state.pendingSnapshot === null
+    || !matchesPendingSnapshotRejection(message, state.pendingSnapshot)
+  ) {
+    return;
+  }
+  state.snapshot = null;
+  state.pendingSnapshot = null;
+  state.loading = false;
+  state.failure = `Snapshot request rejected: ${message.reasonCode}`;
+  requestTimeouts.clearSnapshot();
+  render();
+}
+
+export function handleHSMPhysicalTruthPending(
+  message: HSMPhysicalTruthPendingMessage,
+): void {
+  if (state === null) {
+    return;
+  }
+  const pending = state.pendingPhysicalTruth;
+  if (pending === null) {
+    return;
+  }
+  const bound = bindPendingPhysicalTruth(message, pending);
+  if (bound !== null) {
+    state.pendingPhysicalTruth = bound;
+  }
+}
+
+export function handleHSMPhysicalTruth(message: HSMPhysicalTruthMessage): void {
+  if (
+    state === null
+    || !state.physicalTruth
+    || state.pendingPhysicalTruth === null
+    || !matchesPendingPhysicalTruthResponse(message, state.pendingPhysicalTruth)
+  ) {
+    return;
+  }
+  state.pendingPhysicalTruth = null;
+  state.physicalTruthOverlay = message.overlay;
+  state.physicalTruthFailure = null;
+  requestTimeouts.clearPhysicalTruth();
+  render();
+}
+
+export function handleHSMPhysicalTruthFailure(
+  message: HSMPhysicalTruthFailureMessage,
+): void {
+  if (
+    state === null
+    || state.pendingPhysicalTruth === null
+    || !matchesPendingPhysicalTruthResponse(message, state.pendingPhysicalTruth)
+  ) {
+    return;
+  }
+  state.pendingPhysicalTruth = null;
+  state.physicalTruthOverlay = null;
+  state.physicalTruthFailure = message.error;
+  requestTimeouts.clearPhysicalTruth();
+  render();
+}
+
+export function handleHSMPhysicalTruthRejected(
+  message: HSMPhysicalTruthRejectedMessage,
+): void {
+  if (
+    state === null
+    || state.pendingPhysicalTruth === null
+    || !matchesPendingPhysicalTruthRejection(
+      message,
+      state.pendingPhysicalTruth,
+    )
+  ) {
+    return;
+  }
+  state.pendingPhysicalTruth = null;
+  state.physicalTruthOverlay = null;
+  state.physicalTruthFailure = `Physical Truth request rejected: ${message.reasonCode}`;
+  requestTimeouts.clearPhysicalTruth();
+  render();
+}
+
+function requestSnapshot() {
   if (state === null || sendCommand === null || config === null) {
     return;
   }
   state.loading = true;
   state.snapshot = null;
   state.failure = null;
-  sendCommand("researchHSMRequest", {
-    tableID: config.tableID,
+  state.nextClientRequestID++;
+  state.pendingSnapshot = {
+    serverRequestID: null,
+    clientRequestID: state.nextClientRequestID,
+    archiveGenerationID: config.archiveGenerationID,
     targetBoundary: state.targetBoundary,
     evidenceBoundary: state.evidenceBoundary,
     perspectivePlayer: state.perspectivePlayer,
-    actorPlayer: state.actorPlayer,
-    physicalTruth: state.physicalTruth,
+    semanticProfileID: null,
+    authorityLegalProjectionDigest: null,
+  };
+  const clientRequestID = state.nextClientRequestID;
+  sendCommand("researchHSMRequest", {
+    tableID: config.tableID,
+    protocolVersion: HSM_PROTOCOL_VERSION,
+    archiveGenerationID: config.archiveGenerationID,
+    clientRequestID,
+    targetBoundary: state.targetBoundary,
+    evidenceBoundary: state.evidenceBoundary,
+    perspectivePlayer: state.perspectivePlayer,
+  });
+  requestTimeouts.scheduleSnapshot(() => {
+    if (state?.pendingSnapshot?.clientRequestID !== clientRequestID) {
+      return;
+    }
+    state.pendingSnapshot = null;
+    state.loading = false;
+    state.failure = "Diagnostic Snapshot request timed out.";
+    render();
   });
 }
 
-function render(): void {
+function requestPhysicalTruth() {
+  if (
+    state === null
+    || sendCommand === null
+    || config === null
+    || !state.physicalTruth
+    || !config.physicalTruthGranted
+  ) {
+    return;
+  }
+  state.nextPhysicalTruthClientRequestID++;
+  state.pendingPhysicalTruth = {
+    serverRequestID: null,
+    clientRequestID: state.nextPhysicalTruthClientRequestID,
+    archiveGenerationID: config.archiveGenerationID,
+    targetBoundary: state.targetBoundary,
+    perspectivePlayer: state.perspectivePlayer,
+  };
+  state.physicalTruthOverlay = null;
+  state.physicalTruthFailure = null;
+  sendCommand("researchHSMPhysicalTruthRequest", {
+    tableID: config.tableID,
+    protocolVersion: HSM_PROTOCOL_VERSION,
+    archiveGenerationID: config.archiveGenerationID,
+    clientRequestID: state.nextPhysicalTruthClientRequestID,
+    targetBoundary: state.targetBoundary,
+    perspectivePlayer: state.perspectivePlayer,
+  });
+  const clientRequestID = state.nextPhysicalTruthClientRequestID;
+  requestTimeouts.schedulePhysicalTruth(() => {
+    if (state?.pendingPhysicalTruth?.clientRequestID !== clientRequestID) {
+      return;
+    }
+    state.pendingPhysicalTruth = null;
+    state.physicalTruthOverlay = null;
+    state.physicalTruthFailure = "Physical Truth request timed out.";
+    render();
+  });
+}
+
+function render() {
   if (root === null || state === null || config === null) {
     return;
   }
@@ -288,9 +509,9 @@ function capabilityLabel(): string {
   if (config === null) {
     return "";
   }
-  return config.identity === "hsm_debug_spectator"
-    ? "HSM Debug Spectator · read-only"
-    : `${config.capability.replace("_", " ")} · read-only inspection`;
+  return config.viewerKind === "spectator"
+    ? "HSM Debug Spectator | read-only"
+    : `${config.capability.replace("_", " ")} | read-only inspection`;
 }
 
 function buildPerspectiveSelect(): HTMLSelectElement {
@@ -309,7 +530,7 @@ function buildPerspectiveSelect(): HTMLSelectElement {
   } else if (config !== null) {
     select.add(
       new Option(
-        `Own perspective · ${config.playerNames[config.ownPerspective]}`,
+        `Own perspective | ${config.playerNames[config.ownPerspective]}`,
         String(config.ownPerspective),
         true,
         true,
@@ -355,23 +576,27 @@ function buildTruthControl(): HTMLElement {
   input.id = "hsm-debug-physical-truth";
   input.type = "checkbox";
   input.checked = state?.physicalTruth === true;
-  const allowed =
-    config?.physicalTruthAllowed === true
-    && (config.identity === "hsm_debug_spectator"
-      || state?.perspectivePlayer !== config.ownPerspective
-      || state?.gameFinished === true);
+  const allowed = config?.physicalTruthGranted === true;
   input.disabled = !allowed;
   input.addEventListener("change", () => {
     if (state === null) {
       return;
     }
     state.physicalTruth = input.checked && allowed;
-    renderAndRequest();
+    if (state.physicalTruth) {
+      requestPhysicalTruth();
+    } else {
+      state.pendingPhysicalTruth = null;
+      requestTimeouts.clearPhysicalTruth();
+      state.physicalTruthOverlay = null;
+      state.physicalTruthFailure = null;
+    }
+    render();
   });
   label.append(input, document.createTextNode(" Physical Truth"));
   label.title = allowed
     ? "Privileged physical identities; graphics only"
-    : "Unavailable for own-perspective unfinished live play";
+    : "This viewer was not granted Physical Truth access";
   return label;
 }
 
@@ -414,17 +639,13 @@ function buildDrawer(): HTMLElement {
   drawer.append(heading, buildTimeline(), buildReadOnlyNotice());
   const snapshot = state?.snapshot ?? null;
   if (state?.failure !== null && state?.failure !== undefined) {
-    const failure = textElement(
-      "div",
-      state.failure,
-      "hsm-debug-failure",
-    );
+    const failure = textElement("div", state.failure, "hsm-debug-failure");
     failure.setAttribute("role", "alert");
     drawer.append(failure);
   } else if (state?.loading === true || snapshot === null) {
     const loading = textElement(
       "div",
-      "Computing Diagnostic Snapshot…",
+      "Computing Diagnostic Snapshot...",
       "hsm-debug-loading",
     );
     loading.setAttribute("role", "status");
@@ -432,7 +653,38 @@ function buildDrawer(): HTMLElement {
   } else {
     drawer.append(buildSnapshot(snapshot));
   }
+  if (
+    state?.physicalTruthFailure !== null
+    && state?.physicalTruthFailure !== undefined
+  ) {
+    drawer.append(
+      labelledValue(
+        "Physical Truth unavailable",
+        state.physicalTruthFailure,
+        undefined,
+        "hsm-debug-physical-truth-failure",
+      ),
+    );
+  } else if (
+    state?.physicalTruthOverlay !== null
+    && state?.physicalTruthOverlay !== undefined
+  ) {
+    drawer.append(buildPhysicalTruthOverlay(state.physicalTruthOverlay));
+  }
   return drawer;
+}
+
+function buildPhysicalTruthOverlay(
+  overlay: HSMPhysicalTruthOverlay,
+): HTMLElement {
+  return labelledValue(
+    "PHYSICAL TRUTH | graphics only",
+    overlay.cards
+      .map((card) => `#${card.stableCardID}: identity ${card.identity}`)
+      .join(" | "),
+    undefined,
+    "hsm-debug-physical-truth-panel",
+  );
 }
 
 function buildTimeline(): HTMLElement {
@@ -440,7 +692,7 @@ function buildTimeline(): HTMLElement {
   wrapper.id = "hsm-debug-timeline";
   wrapper.append(textElement("strong", `Target ${state?.targetBoundary ?? 0}`));
   if (state?.historical === true) {
-    wrapper.append(textElement("span", "Historical · evidence equals target"));
+    wrapper.append(textElement("span", "Historical | evidence equals target"));
   } else {
     const input = document.createElement("input");
     input.id = "hsm-debug-evidence";
@@ -463,7 +715,7 @@ function buildTimeline(): HTMLElement {
       input,
       textElement(
         "span",
-        `Hindsight interval ${state?.targetBoundary ?? 0} → ${state?.evidenceBoundary ?? 0}`,
+        `Hindsight interval ${state?.targetBoundary ?? 0} -> ${state?.evidenceBoundary ?? 0}`,
       ),
     );
   }
@@ -479,7 +731,7 @@ function buildReadOnlyNotice(): HTMLElement {
   notice.id = "hsm-debug-read-only";
   notice.textContent =
     perspective === actor
-      ? `${selectedName}'s actual decision boundary · diagnostic indicators do not change legal actions.`
+      ? `${selectedName}'s actual decision boundary | diagnostic indicators do not change legal actions.`
       : `This is not ${selectedName}'s decision boundary. Inspection is read-only; hypothetical action classification is unavailable.`;
   return notice;
 }
@@ -489,47 +741,140 @@ function buildSnapshot(snapshot: HSMSnapshot): HTMLElement {
   content.append(
     labelledValue(
       "Immutable recorded action-time classification",
-      snapshot.actionTimeClassification ?? "Not recorded",
+      actionTimeClassificationSummary(snapshot.action_time_classification),
       "hsm-debug-recorded",
     ),
     labelledValue(
-      "Current diagnostic interpretation",
-      snapshot.diagnosticInterpretation,
+      "Canonical diagnostic result",
+      `generation ${snapshot.generation_id}`
+        + ` | target ${snapshot.target_boundary}`
+        + ` | evidence ${snapshot.evidence_boundary}`
+        + ` | perspective ${snapshot.perspective_player + 1}`
+        + ` | semantic profile ${snapshot.semantic_profile_id}`,
       "hsm-debug-current",
     ),
-    buildCards(snapshot.cards),
-    buildLegalActions(snapshot.legalActions),
-    buildCollection("Rule rows", snapshot.ruleRows, "rule"),
-    buildObjectDetails("Solver statistics", snapshot.solver),
-    buildObjectDetails("Capacity diagnostics", snapshot.capacity),
+    buildClassifications(
+      snapshot.aggregate_action_classifications,
+      "Aggregate action classifications",
+    ),
+    buildMistakenActions(snapshot.mistaken_actions),
+    buildProjection("Consensus projection", snapshot.consensus),
+    buildDiagnoses(snapshot.diagnoses),
+    buildViolationWarnings(snapshot.violation_warnings),
   );
-  if (snapshot.relaxedSources.length > 0) {
-    content.append(
-      labelledValue("Relaxed sources", snapshot.relaxedSources.join(", ")),
-    );
-  }
-  if (snapshot.physicalTruth !== undefined) {
-    content.append(
-      labelledValue(
-        "PHYSICAL TRUTH · graphics only",
-        JSON.stringify(snapshot.physicalTruth),
-        undefined,
-        "hsm-debug-physical-truth-panel",
-      ),
-    );
-  }
   const plain = document.createElement("pre");
   plain.id = "hsm-debug-plain-text";
-  plain.textContent = snapshot.plainText;
+  plain.textContent = snapshot.plain_text;
   content.append(labelledControl("Plain-text diagnostic output", plain));
   return content;
 }
 
-function buildCards(cards: readonly Record<string, unknown>[]): HTMLElement {
+function buildProjection(
+  title: string,
+  projection: HSMDiagnosticProjection,
+): HTMLElement {
+  const section = element("section", "hsm-debug-projection");
+  section.append(
+    textElement("h2", title),
+    buildApplications(projection.applications),
+    buildCardBeliefs(projection.card_beliefs),
+    buildPlayConnections(projection.play_connections),
+    buildConnectionObligations(projection.connection_obligations),
+    buildClassifications(projection.classifications),
+    buildSemanticValues(projection.semantic_values),
+  );
+  return section;
+}
+
+function buildDiagnoses(diagnoses: readonly HSMDiagnosis[]): HTMLElement {
+  const section = element("section", "hsm-debug-diagnoses");
+  section.append(textElement("h2", `HSM Diagnoses (${diagnoses.length})`));
+  for (const diagnosis of diagnoses) {
+    section.append(buildProjection(diagnosis.label, diagnosis));
+  }
+  return section;
+}
+
+function buildViolationWarnings(
+  warnings: readonly HSMViolationWarning[],
+): HTMLElement {
   const section = element("section", "hsm-debug-panel");
-  section.append(textElement("h3", "Observer-relative cards"));
-  if (cards.length === 0) {
-    section.append(textElement("p", "No valid cards at this boundary"));
+  section.append(textElement("h3", "Existential violation warnings"));
+  if (warnings.length === 0) {
+    section.append(textElement("p", "None"));
+    return section;
+  }
+  const list = document.createElement("ul");
+  for (const warning of warnings) {
+    list.append(
+      textElement(
+        "li",
+        `Action ${warning.action_id}: ${warning.diagnosis_count} of ${warning.total_diagnoses} diagnoses`,
+      ),
+    );
+  }
+  section.append(list);
+  return section;
+}
+
+function buildMistakenActions(
+  mistakenActions: readonly HSMMistakenAction[],
+): HTMLElement {
+  const section = element("section", "hsm-debug-panel");
+  section.append(textElement("h3", "Universal Mistaken Actions"));
+  if (mistakenActions.length === 0) {
+    section.append(textElement("p", "None"));
+    return section;
+  }
+  const list = document.createElement("ul");
+  for (const mistaken of mistakenActions) {
+    list.append(
+      textElement(
+        "li",
+        `Transition ${mistaken.transition_index}`
+          + ` | actor ${mistaken.historical_actor + 1}`
+          + ` | action ${mistaken.action_id}`
+          + ` | classifiers: ${mistaken.violating_classifiers.join(", ")}`,
+      ),
+    );
+  }
+  section.append(list);
+  return section;
+}
+
+function buildApplications(
+  applications: readonly HSMConventionApplication[],
+): HTMLElement {
+  const section = element("section", "hsm-debug-panel");
+  section.append(textElement("h3", "Convention applications"));
+  if (applications.length === 0) {
+    section.append(textElement("p", "None at this boundary"));
+    return section;
+  }
+  const list = document.createElement("ul");
+  for (const application of applications) {
+    list.append(
+      textElement(
+        "li",
+        `${application.rule} → ${application.meaning}`
+          + ` | transition ${application.source_transition}`
+          + ` | actor ${application.historical_actor + 1}`
+          + ` | observer ${application.outer_observer + 1}`
+          + ` | ${application.subject_kind} #${application.subject_id}`
+          + ` | provenance ${application.provenance_id}`
+          + ` | applicable: ${application.applicable ? "yes" : "no"}`,
+      ),
+    );
+  }
+  section.append(list);
+  return section;
+}
+
+function buildCardBeliefs(beliefs: readonly HSMCardBelief[]): HTMLElement {
+  const section = element("section", "hsm-debug-panel");
+  section.append(textElement("h3", "Observer-relative card beliefs"));
+  if (beliefs.length === 0) {
+    section.append(textElement("p", "No card beliefs at this boundary"));
     return section;
   }
   if (state?.cardLabels === "off") {
@@ -537,30 +882,25 @@ function buildCards(cards: readonly Record<string, unknown>[]): HTMLElement {
     return section;
   }
   const badges = element("div", "hsm-debug-card-badges");
-  for (const card of cards) {
-    const stableCardID = Number(card["stableCardID"]);
-    const summary = String(card["summary"] ?? "No HSM note");
+  for (const belief of beliefs) {
+    const stableCardID = belief.stable_card_id;
+    const summary = `candidate mask ${belief.candidate_identity_mask}`;
+    const reasons = belief.reason_identity_masks
+      .map((reason) => `${reason.reason}: mask ${reason.identity_mask}`)
+      .join(" | ");
     if (state?.cardLabels === "summary") {
-      const cardSummary = textElement("span", `#${stableCardID} · ${summary}`);
+      const cardSummary = textElement("span", `#${stableCardID} | ${summary}`);
       cardSummary.className = "hsm-debug-card-summary";
-      cardSummary.title = Array.isArray(card["notes"])
-        ? (card["notes"] as unknown[]).join(" · ")
-        : summary;
+      cardSummary.title = reasons;
       badges.append(cardSummary);
       continue;
     }
-    const badge = button(`#${stableCardID} · ${summary}`, "", () => {
-      if (state === null) {
-        return;
-      }
-      state.selectedCardID = stableCardID;
-      render();
+    const badge = button(`#${stableCardID} | ${summary}`, "", () => {
+      selectCard(stableCardID);
     });
     badge.removeAttribute("id");
     badge.className = "hsm-debug-card-badge";
-    badge.title = Array.isArray(card["notes"])
-      ? (card["notes"] as unknown[]).join(" · ")
-      : summary;
+    badge.title = reasons;
     badge.setAttribute(
       "aria-pressed",
       String(state?.selectedCardID === stableCardID),
@@ -568,52 +908,121 @@ function buildCards(cards: readonly Record<string, unknown>[]): HTMLElement {
     badges.append(badge);
   }
   section.append(badges);
-  const selected = cards.find(
-    (card) => Number(card["stableCardID"]) === state?.selectedCardID,
+  const selected = beliefs.find(
+    (belief) => belief.stable_card_id === state?.selectedCardID,
   );
   if (selected !== undefined) {
     const details = element("section", "hsm-debug-panel");
     details.append(
+      textElement("h3", `Selected Stable Card ${selected.stable_card_id}`),
       textElement(
-        "h3",
-        `Selected Stable Card ${String(selected["stableCardID"])}`,
+        "p",
+        `Candidate identity mask: ${selected.candidate_identity_mask}`,
+      ),
+      textElement(
+        "p",
+        `Reasons: ${selected.reason_identity_masks
+          .map((reason) => `${reason.reason}: mask ${reason.identity_mask}`)
+          .join(" | ")}`,
       ),
     );
-    for (const key of ["notes", "connections", "obligations"] as const) {
-      const values = selected[key];
-      if (Array.isArray(values) && values.length > 0) {
-        details.append(
-          textElement("p", `${fieldLabel(key)}: ${values.join(" · ")}`),
-        );
-      }
-    }
     section.append(details);
   }
   return section;
 }
 
-function buildLegalActions(
-  actions: readonly Record<string, unknown>[],
+function buildPlayConnections(
+  connections: readonly HSMPlayConnection[],
 ): HTMLElement {
   const section = element("section", "hsm-debug-panel");
-  section.append(textElement("h3", "Legal action diagnostics"));
-  if (actions.length === 0) {
+  section.append(textElement("h3", "Play Connections"));
+  if (connections.length === 0) {
+    section.append(textElement("p", "None at this boundary"));
+    return section;
+  }
+  const list = document.createElement("ol");
+  for (const connection of connections) {
+    const prerequisites = connection.prerequisites
+      .map((card) => `#${card.stable_card_id} mask ${card.identity_mask}`)
+      .join(" → ");
+    list.append(
+      textElement(
+        "li",
+        `Focus #${connection.focus_card_id} mask ${connection.focus_identity_mask}`
+          + ` | ordered prerequisites: ${prerequisites || "none"}`
+          + ` | transition ${connection.source_transition}`
+          + ` | available boundary ${connection.available_from_boundary}`
+          + ` | provenance ${connection.provenance_id}`,
+      ),
+    );
+  }
+  section.append(list);
+  return section;
+}
+
+function buildConnectionObligations(
+  obligations: readonly HSMConnectionObligation[],
+): HTMLElement {
+  const section = element("section", "hsm-debug-panel");
+  section.append(textElement("h3", "Connection Obligations"));
+  if (obligations.length === 0) {
+    section.append(textElement("p", "None at this boundary"));
+    return section;
+  }
+  const list = document.createElement("ul");
+  for (const obligation of obligations) {
+    const candidates = obligation.candidates
+      .map((card, index) => {
+        const current =
+          index === obligation.current_candidate_index ? " (current)" : "";
+        return `#${card.stable_card_id} mask ${card.identity_mask}${current}`;
+      })
+      .join(" → ");
+    list.append(
+      textElement(
+        "li",
+        `${obligation.kind} | owner player ${obligation.owner_player + 1}`
+          + ` | focus #${obligation.focus_card_id}`
+          + ` mask ${obligation.focus_identity_mask}`
+          + ` | ordered candidates: ${candidates}`
+          + ` | transition ${obligation.source_transition}`
+          + ` | available boundary ${obligation.available_from_boundary}`
+          + ` | provenance ${obligation.provenance_id}`,
+      ),
+    );
+  }
+  section.append(list);
+  return section;
+}
+
+function buildClassifications(
+  classifications: readonly HSMClassification[],
+  title = "Action classifications",
+): HTMLElement {
+  const section = element("section", "hsm-debug-panel");
+  section.append(textElement("h3", title));
+  if (classifications.length === 0) {
     section.append(textElement("p", "None at this boundary"));
     return section;
   }
   const actionsRow = element("div", "hsm-debug-actions");
-  for (const action of actions) {
-    const actionID = Number(action["actionID"]);
-    const classification = String(action["classification"] ?? "neutral");
-    const actionButton = button(String(action["label"] ?? actionID), "", () => {
-      if (state === null) {
-        return;
-      }
-      state.selectedActionID = actionID;
-      render();
-    });
+  for (const classification of classifications) {
+    const actionID = classification.action_id;
+    const actionButton = button(
+      `Action ${actionID} | ${classification.classifier}`,
+      "",
+      () => {
+        selectAction(actionID);
+      },
+    );
     actionButton.removeAttribute("id");
-    actionButton.className = `hsm-debug-action hsm-action-${classification}`;
+    actionButton.className = "hsm-debug-action";
+    if (classification.follow) {
+      actionButton.classList.add("hsm-action-follow");
+    }
+    if (classification.violation) {
+      actionButton.classList.add("hsm-action-violation");
+    }
     actionButton.setAttribute(
       "aria-pressed",
       String(state?.selectedActionID === actionID),
@@ -621,77 +1030,71 @@ function buildLegalActions(
     actionsRow.append(actionButton);
   }
   section.append(actionsRow);
-  const selected = actions.find(
-    (action) => Number(action["actionID"]) === state?.selectedActionID,
+  const selected = classifications.find(
+    (classification) => classification.action_id === state?.selectedActionID,
   );
   if (selected !== undefined) {
-    const details = buildCollection("Selected action", [selected], "label");
+    const details = element("section", "hsm-debug-panel");
     details.id = "hsm-debug-action-details";
+    details.append(
+      textElement("h3", `Action ${selected.action_id}`),
+      textElement("p", `Classifier: ${selected.classifier}`),
+      textElement(
+        "p",
+        `Follow: ${selected.follow ? "yes" : "no"} | Violation: ${selected.violation ? "yes" : "no"}`,
+      ),
+    );
     section.append(details);
   }
   return section;
 }
 
-function buildCollection(
-  title: string,
-  values: readonly Record<string, unknown>[],
-  primaryKey: string,
-): HTMLElement {
+function buildSemanticValues(values: readonly HSMSemanticValue[]): HTMLElement {
   const section = element("section", "hsm-debug-panel");
-  section.append(textElement("h3", title));
+  section.append(textElement("h3", "Semantic values"));
   if (values.length === 0) {
     section.append(textElement("p", "None at this boundary"));
     return section;
   }
   const list = document.createElement("ul");
   for (const value of values) {
-    const item = document.createElement("li");
-    const primary = value[primaryKey] ?? value["classification"] ?? "Detail";
-    if (typeof value["classification"] === "string") {
-      item.classList.add(`hsm-action-${value["classification"]}`);
-    }
-    item.append(textElement("strong", String(primary)));
-    const details = Object.entries(value)
-      .filter(
-        ([key]) =>
-          key !== primaryKey
-          && key !== "label"
-          && key !== "classification"
-          && key !== "rule",
-      )
-      .map(([key, entry]) => `${fieldLabel(key)}: ${formatField(entry)}`);
-    if (typeof value["classification"] === "string") {
-      details.unshift(fieldLabel(String(value["classification"])));
-    }
-    if (details.length > 0) {
-      item.append(document.createTextNode(` · ${details.join(" · ")}`));
-    }
-    list.append(item);
+    list.append(
+      textElement(
+        "li",
+        `Action ${value.action_id} | ${value.category}: ${value.name}`
+          + ` | active: ${value.active ? "yes" : "no"}`,
+      ),
+    );
   }
   section.append(list);
   return section;
 }
 
-function formatField(value: unknown): string {
-  return Array.isArray(value) ? value.join(", ") : String(value);
+function selectCard(stableCardID: number) {
+  if (state === null) {
+    return;
+  }
+  state.selectedCardID = stableCardID;
+  render();
 }
 
-function fieldLabel(value: string): string {
-  const spaced = value
-    .replaceAll(/([a-z])([A-Z])/g, "$1 $2")
-    .replaceAll("_", " ");
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+function selectAction(actionID: number) {
+  if (state === null) {
+    return;
+  }
+  state.selectedActionID = actionID;
+  render();
 }
 
-function buildObjectDetails(
-  title: string,
-  value: Record<string, unknown>,
-): HTMLElement {
-  return labelledValue(
-    title,
-    Object.entries(value)
-      .map(([key, entry]) => `${key}: ${String(entry)}`)
-      .join(" · "),
+function actionTimeClassificationSummary(
+  record: HSMActionTimeClassification | null,
+): string {
+  if (record === null) {
+    return "Not recorded";
+  }
+  return (
+    `Action ${record.selected_action_id} | Follow: ${record.final_follow ? "yes" : "no"}`
+    + ` | Violation: ${record.final_violation ? "yes" : "no"}`
   );
 }
 
@@ -702,23 +1105,29 @@ function buildRestoreHandle(): HTMLButtonElement {
   return restore;
 }
 
-function toggleDrawer(): void {
+function toggleDrawer() {
   if (state === null) {
     return;
   }
   state.drawerOpen = !state.drawerOpen;
   savePreferences();
   render();
-  window.dispatchEvent(new Event("resize"));
+  globalThis.dispatchEvent(new Event("resize"));
 }
 
-function renderAndRequest(): void {
+function renderAndRequest() {
   if (state === null) {
     return;
   }
   state.snapshot = null;
   state.loading = true;
   state.failure = null;
+  if (!state.physicalTruth) {
+    state.pendingPhysicalTruth = null;
+    requestTimeouts.clearPhysicalTruth();
+    state.physicalTruthOverlay = null;
+    state.physicalTruthFailure = null;
+  }
   render();
   requestSnapshot();
 }
@@ -789,33 +1198,33 @@ function loadPreferences(key: string | null): InspectorPreferences | null {
     return null;
   }
   try {
-    const raw = window.sessionStorage.getItem(key);
+    const raw = globalThis.sessionStorage.getItem(key);
     if (raw === null) {
       return null;
     }
     const value = JSON.parse(raw) as Partial<InspectorPreferences>;
     if (
       typeof value.drawerOpen !== "boolean"
-      || !["badges", "summary", "off"].includes(String(value.cardLabels))
+      || !["badges", "off", "summary"].includes(String(value.cardLabels))
     ) {
       return null;
     }
     return {
       drawerOpen: value.drawerOpen,
-      cardLabels: value.cardLabels as InspectorState["cardLabels"],
+      cardLabels: value.cardLabels!,
     };
   } catch {
     return null;
   }
 }
 
-function savePreferences(): void {
+function savePreferences() {
   const key = preferenceKey(config);
   if (key === null || state === null) {
     return;
   }
   try {
-    window.sessionStorage.setItem(
+    globalThis.sessionStorage.setItem(
       key,
       JSON.stringify({
         drawerOpen: state.drawerOpen,
@@ -827,9 +1236,9 @@ function savePreferences(): void {
   }
 }
 
-function removePreferences(key: string): void {
+function removePreferences(key: string) {
   try {
-    window.sessionStorage.removeItem(key);
+    globalThis.sessionStorage.removeItem(key);
   } catch {
     // Storage may be unavailable in privacy-restricted browser contexts.
   }

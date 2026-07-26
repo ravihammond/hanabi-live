@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/Hanabi-Live/hanabi-live/logger"
@@ -11,9 +12,30 @@ import (
 	"github.com/sasha-s/go-deadlock"
 )
 
+type sessionOutbound interface {
+	Ready() bool
+	Write([]byte) error
+}
+
+type melodySessionOutbound struct {
+	session *melody.Session
+}
+
+func (outbound melodySessionOutbound) Ready() bool {
+	return outbound.session != nil && outbound.session.Request != nil
+}
+
+func (outbound melodySessionOutbound) Write(message []byte) error {
+	return outbound.session.Write(message)
+}
+
 type Session struct {
 	// The underlying Melody session (which represents the WebSocket connection)
 	ms *melody.Session
+
+	// The checked outbound seam is overridden only by another concrete adapter,
+	// such as an in-memory recorder. Normal websocket sessions use ms above.
+	outbound sessionOutbound
 
 	// Static data fields
 	// (these do not change, so they can safely be read without race conditions or locking)
@@ -85,26 +107,30 @@ func NewFakeSession(id int, name string) *Session {
 
 // Emit sends a message to a client using the Golem-style protocol described above
 func (s *Session) Emit(command string, d interface{}) {
-	if s == nil || s.ms == nil || s.ms.Request == nil {
-		return
+	_ = s.EmitChecked(command, d)
+}
+
+// EmitChecked sends one message and reports whether it reached the websocket
+// adapter. Callers that own retryable work must use this method.
+func (s *Session) EmitChecked(command string, d interface{}) error {
+	if s == nil {
+		return errors.New("websocket session is nil")
+	}
+	outbound := s.outbound
+	if outbound == nil && s.ms != nil {
+		outbound = melodySessionOutbound{session: s.ms}
+	}
+	if outbound == nil || !outbound.Ready() {
+		return errors.New("websocket session is not ready")
 	}
 
-	// Convert the data to JSON
-	var ds string
-	if dj, err := json.Marshal(d); err != nil {
+	data, err := json.Marshal(d)
+	if err != nil {
 		logger.Error("Failed to marshal data when writing to a WebSocket session: " + err.Error())
-		return
-	} else {
-		ds = string(dj)
+		return err
 	}
-
-	// Send the message as bytes
-	msg := command + " " + ds
-	bytes := []byte(msg)
-	if err := s.ms.Write(bytes); err != nil {
-		// This can routinely fail if the session is closed, so just return
-		return
-	}
+	message := []byte(command + " " + string(data))
+	return outbound.Write(message)
 }
 
 func (s *Session) Warning(message string) {

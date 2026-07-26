@@ -8,6 +8,17 @@ import { Status } from "./enums/Status";
 import { gameHistory } from "./interfaces/GameHistory";
 import { settings } from "./interfaces/Settings";
 import { spectator } from "./interfaces/Spectator";
+import {
+  hsmPhysicalTruthFailureMessage,
+  hsmPhysicalTruthIdentity,
+  hsmPhysicalTruthMessage,
+  hsmPhysicalTruthRejectedMessage,
+  hsmResponseIdentity,
+  hsmSnapshotFailureMessage,
+  hsmSnapshotMessage,
+  hsmSnapshotRejectedMessage,
+  hsmSnapshotUnavailableMessage,
+} from "./researchHSM";
 import { tableID } from "./types/TableID";
 import { userID } from "./types/UserID";
 
@@ -184,6 +195,25 @@ export interface ServerCommandData {
   [ServerCommand.chatList]: ServerCommandChatListData;
   [ServerCommand.error]: ServerCommandErrorData;
   [ServerCommand.gameHistory]: ServerCommandGameHistoryData;
+  [ServerCommand.hsmPhysicalTruth]: z.infer<typeof hsmPhysicalTruthMessage>;
+  [ServerCommand.hsmPhysicalTruthFailure]: z.infer<
+    typeof hsmPhysicalTruthFailureMessage
+  >;
+  [ServerCommand.hsmPhysicalTruthPending]: z.infer<
+    typeof hsmPhysicalTruthIdentity
+  >;
+  [ServerCommand.hsmPhysicalTruthRejected]: z.infer<
+    typeof hsmPhysicalTruthRejectedMessage
+  >;
+  [ServerCommand.hsmSnapshot]: z.infer<typeof hsmSnapshotMessage>;
+  [ServerCommand.hsmSnapshotFailure]: z.infer<typeof hsmSnapshotFailureMessage>;
+  [ServerCommand.hsmSnapshotPending]: z.infer<typeof hsmResponseIdentity>;
+  [ServerCommand.hsmSnapshotRejected]: z.infer<
+    typeof hsmSnapshotRejectedMessage
+  >;
+  [ServerCommand.hsmSnapshotUnavailable]: z.infer<
+    typeof hsmSnapshotUnavailableMessage
+  >;
   [ServerCommand.table]: ServerCommandTableData;
   [ServerCommand.tableList]: ServerCommandTableListData;
   [ServerCommand.user]: ServerCommandUserData;
@@ -200,6 +230,15 @@ export const SERVER_COMMAND_SCHEMAS = {
   [ServerCommand.chatList]: serverCommandChatListData,
   [ServerCommand.error]: serverCommandErrorData,
   [ServerCommand.gameHistory]: serverCommandGameHistoryData,
+  [ServerCommand.hsmPhysicalTruth]: hsmPhysicalTruthMessage,
+  [ServerCommand.hsmPhysicalTruthFailure]: hsmPhysicalTruthFailureMessage,
+  [ServerCommand.hsmPhysicalTruthPending]: hsmPhysicalTruthIdentity,
+  [ServerCommand.hsmPhysicalTruthRejected]: hsmPhysicalTruthRejectedMessage,
+  [ServerCommand.hsmSnapshot]: hsmSnapshotMessage,
+  [ServerCommand.hsmSnapshotFailure]: hsmSnapshotFailureMessage,
+  [ServerCommand.hsmSnapshotPending]: hsmResponseIdentity,
+  [ServerCommand.hsmSnapshotRejected]: hsmSnapshotRejectedMessage,
+  [ServerCommand.hsmSnapshotUnavailable]: hsmSnapshotUnavailableMessage,
   [ServerCommand.table]: serverCommandTableData,
   [ServerCommand.tableList]: serverCommandTableListData,
   [ServerCommand.user]: serverCommandUserData,
