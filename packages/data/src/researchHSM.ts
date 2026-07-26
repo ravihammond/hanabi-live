@@ -35,6 +35,7 @@ export const hsmResponseIdentity = z
     targetBoundary: nonNegativeInteger,
     evidenceBoundary: nonNegativeInteger,
     perspectivePlayer: nonNegativeInteger,
+    actorPlayer: z.number().int().min(-1),
     semanticProfileID: positiveInteger,
     authorityLegalProjectionDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
   })
@@ -149,16 +150,17 @@ const hsmDiagnosticProjection = z
 
 const hsmPhysicalGuard = z
   .object({
-    world_ids: nonNegativeInteger.array().min(1).readonly(),
+    clause_ids: z
+      .string()
+      .regex(/^sha256:[0-9a-f]{64}$/)
+      .array()
+      .min(1)
+      .readonly(),
     evidence_boundary: nonNegativeInteger,
     semantic_profile_id: positiveInteger,
   })
   .strict()
-  .readonly()
-  .refine(
-    (guard) => new Set(guard.world_ids).size === guard.world_ids.length,
-    "world_ids must be unique",
-  );
+  .readonly();
 
 const hsmDiagnosis = hsmDiagnosticProjection
   .unwrap()
@@ -222,15 +224,12 @@ export const hsmSnapshot = z
     target_boundary: nonNegativeInteger,
     evidence_boundary: nonNegativeInteger,
     perspective_player: nonNegativeInteger,
+    semantic_program_id: z.string().regex(/^sha256:[0-9a-f]{64}$/),
     semantic_profile_id: positiveInteger,
-    authority_legal_action_projection: legalActionVector,
     aggregate_action_classifications: hsmClassification.array().readonly(),
     mistaken_actions: hsmMistakenAction.array().readonly(),
     diagnoses: hsmDiagnosis.array().min(1).readonly(),
     consensus: hsmDiagnosticProjection,
-    violation_warnings: hsmViolationWarning.array().readonly(),
-    action_time_classification: hsmActionTimeClassification.nullable(),
-    plain_text: nonEmptyString,
   })
   .strict()
   .readonly()
@@ -256,21 +255,13 @@ export const hsmSnapshot = z
         path: ["diagnoses"],
       });
     }
-    const worldIDs = snapshot.diagnoses.flatMap(
-      (diagnosis) => diagnosis.physical_guard.world_ids,
+    const clauseIDs = snapshot.diagnoses.flatMap(
+      (diagnosis) => diagnosis.physical_guard.clause_ids,
     );
-    if (new Set(worldIDs).size !== worldIDs.length) {
+    if (new Set(clauseIDs).size !== clauseIDs.length) {
       context.addIssue({
         code: "custom",
-        message: "physical guard world_ids must be globally unique",
-        path: ["diagnoses"],
-      });
-    }
-    if (worldIDs.some((worldID, index) => worldID !== index)) {
-      context.addIssue({
-        code: "custom",
-        message:
-          "physical guard world_ids must be globally sequential in diagnosis order",
+        message: "physical guard clause_ids must be globally unique",
         path: ["diagnoses"],
       });
     }
@@ -287,29 +278,6 @@ export const hsmSnapshot = z
           path: ["diagnoses", index, "physical_guard"],
         });
       }
-    }
-    for (const [index, warning] of snapshot.violation_warnings.entries()) {
-      if (warning.total_diagnoses !== snapshot.diagnoses.length) {
-        context.addIssue({
-          code: "custom",
-          message: "violation warning total must match diagnoses",
-          path: ["violation_warnings", index],
-        });
-      }
-    }
-    const actionTime = snapshot.action_time_classification;
-    if (
-      actionTime !== null
-      && (actionTime.generation_id !== snapshot.generation_id
-        || actionTime.target_boundary !== snapshot.target_boundary
-        || actionTime.perspective_player !== snapshot.perspective_player
-        || actionTime.semantic_profile_id !== snapshot.semantic_profile_id)
-    ) {
-      context.addIssue({
-        code: "custom",
-        message: "action-time coordinate must match the snapshot target",
-        path: ["action_time_classification"],
-      });
     }
   });
 
@@ -333,24 +301,31 @@ export type HSMViolationWarning = z.infer<typeof hsmViolationWarning>;
 
 const hsmUnsatisfiableCore = z
   .object({
-    count: nonNegativeInteger,
-    valid: booleanVector,
-    coordinate_kind: nonNegativeInteger.array().readonly(),
-    transition_index: nonNegativeInteger.array().readonly(),
-    rule_index: nonNegativeInteger.array().readonly(),
-    subject_index: nonNegativeInteger.array().readonly(),
-    evidence_boundary: nonNegativeInteger.array().readonly(),
-    provenance_id: nonNegativeInteger.array().readonly(),
     subset_minimal: z.boolean(),
+    coordinate_kind: z
+      .enum([
+        "evaluation",
+        "stable_card",
+        "transition",
+        "rule",
+        "action",
+        "evidence",
+      ])
+      .array()
+      .min(1)
+      .readonly(),
+    transition_index: z.number().int().array().readonly(),
+    rule_index: z.number().int().array().readonly(),
+    subject_index: z.number().int().array().readonly(),
+    evidence_boundary: z.number().int().array().readonly(),
+    provenance_id: z.number().int().array().readonly(),
   })
   .strict()
   .readonly()
   .superRefine((core, context) => {
-    const length = core.valid.length;
+    const length = core.coordinate_kind.length;
     if (
-      core.count > length
-      || core.coordinate_kind.length !== length
-      || core.transition_index.length !== length
+      core.transition_index.length !== length
       || core.rule_index.length !== length
       || core.subject_index.length !== length
       || core.evidence_boundary.length !== length
@@ -358,31 +333,27 @@ const hsmUnsatisfiableCore = z
     ) {
       context.addIssue({
         code: "custom",
-        message: "unsatisfiable core arrays must share one fixed shape",
+        message: "trimmed unsatisfiable core arrays must share one shape",
       });
     }
   });
 
 const hsmInvariantFailure = z
   .object({
-    primary_defect: nonNegativeInteger,
-    count: nonNegativeInteger,
-    valid: booleanVector,
-    defect: nonNegativeInteger.array().readonly(),
-    transition_index: nonNegativeInteger.array().readonly(),
-    rule_index: nonNegativeInteger.array().readonly(),
-    subject_index: nonNegativeInteger.array().readonly(),
-    evidence_boundary: nonNegativeInteger.array().readonly(),
-    provenance_id: nonNegativeInteger.array().readonly(),
+    primary_defect: nonEmptyString,
+    defect: nonEmptyString.array().min(1).readonly(),
+    transition_index: z.number().int().array().readonly(),
+    rule_index: z.number().int().array().readonly(),
+    subject_index: z.number().int().array().readonly(),
+    evidence_boundary: z.number().int().array().readonly(),
+    provenance_id: z.number().int().array().readonly(),
   })
   .strict()
   .readonly()
   .superRefine((failure, context) => {
-    const length = failure.valid.length;
+    const length = failure.defect.length;
     if (
-      failure.count > length
-      || failure.defect.length !== length
-      || failure.transition_index.length !== length
+      failure.transition_index.length !== length
       || failure.rule_index.length !== length
       || failure.subject_index.length !== length
       || failure.evidence_boundary.length !== length
@@ -390,7 +361,7 @@ const hsmInvariantFailure = z
     ) {
       context.addIssue({
         code: "custom",
-        message: "invariant failure arrays must share one fixed shape",
+        message: "trimmed invariant failure arrays must share one shape",
       });
     }
   });
@@ -413,7 +384,7 @@ export const hsmFailure = z
     category: hsmFailureCategory,
     phase: hsmFailurePhase,
     topology_id: nonNegativeInteger,
-    capacity_manifest_id: nonEmptyString,
+    capacity_manifest_id: z.string().regex(/^sha256:[0-9a-f]{64}$/),
     semantic_program_id: z.string().regex(/^sha256:[0-9a-f]{64}$/),
     semantic_profile_id: positiveInteger,
     legal_action_projection: legalActionVector,

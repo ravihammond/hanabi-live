@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -174,6 +175,7 @@ type ResearchHSMResponseIdentity struct {
 	TargetBoundary                 int    `json:"target_boundary"`
 	EvidenceBoundary               int    `json:"evidence_boundary"`
 	PerspectivePlayer              int    `json:"perspective_player"`
+	ActorPlayer                    int    `json:"actor_player"`
 	SemanticProfileID              int    `json:"semantic_profile_id"`
 	AuthorityLegalProjectionDigest string `json:"authority_legal_projection_digest"`
 }
@@ -366,9 +368,10 @@ func validateResearchHSMConnectionCards(
 }
 
 type ResearchHSMPhysicalGuard struct {
-	WorldIDs          []int `json:"world_ids"`
-	EvidenceBoundary  int   `json:"evidence_boundary"`
-	SemanticProfileID int   `json:"semantic_profile_id"`
+	WorldIDs          []int    `json:"world_ids"`
+	ClauseIDs         []string `json:"clause_ids"`
+	EvidenceBoundary  int      `json:"evidence_boundary"`
+	SemanticProfileID int      `json:"semantic_profile_id"`
 }
 
 type ResearchHSMDiagnosis struct {
@@ -410,6 +413,7 @@ type ResearchHSMSnapshot struct {
 	TargetBoundary                 int                                  `json:"target_boundary"`
 	EvidenceBoundary               int                                  `json:"evidence_boundary"`
 	PerspectivePlayer              int                                  `json:"perspective_player"`
+	SemanticProgramID              string                               `json:"semantic_program_id"`
 	SemanticProfileID              int                                  `json:"semantic_profile_id"`
 	AuthorityLegalActionProjection []bool                               `json:"authority_legal_action_projection"`
 	AggregateActionClassifications []ResearchHSMClassification          `json:"aggregate_action_classifications"`
@@ -419,6 +423,30 @@ type ResearchHSMSnapshot struct {
 	ViolationWarnings              []ResearchHSMViolationWarning        `json:"violation_warnings"`
 	ActionTimeClassification       *ResearchHSMActionTimeClassification `json:"action_time_classification"`
 	PlainText                      string                               `json:"plain_text"`
+	raw                            json.RawMessage
+}
+
+// UnmarshalJSON retains the Python-owned semantic DTO verbatim. Typed fields
+// remain only for legacy in-process fixtures; production transport never
+// reinterprets or reconstructs the inner payload.
+func (snapshot *ResearchHSMSnapshot) UnmarshalJSON(data []byte) error {
+	type snapshotAlias ResearchHSMSnapshot
+	var decoded snapshotAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*snapshot = ResearchHSMSnapshot(decoded)
+	snapshot.raw = append(json.RawMessage(nil), data...)
+	return nil
+}
+
+// MarshalJSON forwards the exact Python payload when it came from transport.
+func (snapshot ResearchHSMSnapshot) MarshalJSON() ([]byte, error) {
+	if len(snapshot.raw) != 0 {
+		return snapshot.raw, nil
+	}
+	type snapshotAlias ResearchHSMSnapshot
+	return json.Marshal(snapshotAlias(snapshot))
 }
 
 func (snapshot ResearchHSMSnapshot) validateForRequest(
@@ -591,6 +619,46 @@ type ResearchHSMFailure struct {
 	LegalActionProjection []bool                        `json:"legal_action_projection"`
 	UnsatisfiableCore     *ResearchHSMUnsatisfiableCore `json:"unsatisfiable_core,omitempty"`
 	InvariantFailure      *ResearchHSMInvariantFailure  `json:"invariant_failure,omitempty"`
+	raw                   json.RawMessage
+}
+
+// UnmarshalJSON retains the Python-owned typed failure verbatim. The server
+// authenticates and correlates the outer envelope; Python owns this semantic
+// payload's schema and validation.
+func (failure *ResearchHSMFailure) UnmarshalJSON(data []byte) error {
+	type failureHeader struct {
+		Category              string `json:"category"`
+		Phase                 string `json:"phase"`
+		TopologyID            int    `json:"topology_id"`
+		CapacityManifestID    string `json:"capacity_manifest_id"`
+		SemanticProgramID     string `json:"semantic_program_id"`
+		SemanticProfileID     int    `json:"semantic_profile_id"`
+		LegalActionProjection []bool `json:"legal_action_projection"`
+	}
+	var header failureHeader
+	if err := json.Unmarshal(data, &header); err != nil {
+		return err
+	}
+	*failure = ResearchHSMFailure{
+		Category:              header.Category,
+		Phase:                 header.Phase,
+		TopologyID:            header.TopologyID,
+		CapacityManifestID:    header.CapacityManifestID,
+		SemanticProgramID:     header.SemanticProgramID,
+		SemanticProfileID:     header.SemanticProfileID,
+		LegalActionProjection: header.LegalActionProjection,
+		raw:                   append(json.RawMessage(nil), data...),
+	}
+	return nil
+}
+
+// MarshalJSON forwards the exact Python payload when it came from transport.
+func (failure ResearchHSMFailure) MarshalJSON() ([]byte, error) {
+	if len(failure.raw) != 0 {
+		return failure.raw, nil
+	}
+	type failureAlias ResearchHSMFailure
+	return json.Marshal(failureAlias(failure))
 }
 
 func (failure ResearchHSMFailure) validateForRequest(request *ResearchHSMSnapshotRequest) error {
@@ -700,6 +768,7 @@ func responseIdentityForSnapshotRequest(request *ResearchHSMSnapshotRequest) Res
 		TargetBoundary:                 request.TargetBoundary,
 		EvidenceBoundary:               request.EvidenceBoundary,
 		PerspectivePlayer:              request.PerspectivePlayer,
+		ActorPlayer:                    request.ActorPlayer,
 		SemanticProfileID:              request.SemanticProfileID,
 		AuthorityLegalProjectionDigest: request.AuthorityLegalProjection.Digest,
 	}
@@ -718,6 +787,7 @@ func hsmResponseIdentityMessage(identity ResearchHSMResponseIdentity) map[string
 		"targetBoundary":                 identity.TargetBoundary,
 		"evidenceBoundary":               identity.EvidenceBoundary,
 		"perspectivePlayer":              identity.PerspectivePlayer,
+		"actorPlayer":                    identity.ActorPlayer,
 		"semanticProfileID":              identity.SemanticProfileID,
 		"authorityLegalProjectionDigest": identity.AuthorityLegalProjectionDigest,
 	}

@@ -34,6 +34,7 @@ type researchHSMResponseWire struct {
 	TargetBoundary                 int    `json:"targetBoundary"`
 	EvidenceBoundary               int    `json:"evidenceBoundary"`
 	PerspectivePlayer              int    `json:"perspectivePlayer"`
+	ActorPlayer                    int    `json:"actorPlayer"`
 	SemanticProfileID              int    `json:"semanticProfileID"`
 	AuthorityLegalProjectionDigest string `json:"authorityLegalProjectionDigest"`
 }
@@ -890,76 +891,43 @@ func TestHSMSnapshotGoldenFixtureMatchesTheGoTransportContract(t *testing.T) {
 	}
 
 	snapshot := golden.SnapshotMessage.Snapshot
-	if len(snapshot.Diagnoses) != 2 {
-		t.Fatalf("expected two correlated diagnoses, got %d", len(snapshot.Diagnoses))
+	if len(snapshot.raw) == 0 {
+		t.Fatal("Go did not retain the Python-owned snapshot payload")
 	}
-	if !strings.HasPrefix(snapshot.Diagnoses[0].Label, "hsm-diagnosis:") ||
-		!strings.HasPrefix(snapshot.Diagnoses[1].Label, "hsm-diagnosis:") ||
-		snapshot.Diagnoses[0].Label == snapshot.Diagnoses[1].Label {
+	if snapshot.SemanticProgramID == "" || len(snapshot.Diagnoses) != 1 {
+		t.Fatalf("canonical semantic identity or diagnosis was lost: %#v", snapshot)
+	}
+	if !strings.HasPrefix(snapshot.Diagnoses[0].Label, "hsm-diagnosis:") {
 		t.Fatalf("unexpected diagnosis labels: %#v", snapshot.Diagnoses)
 	}
-	if snapshot.Diagnoses[0].Applications[0].Meaning ==
-		snapshot.Diagnoses[1].Applications[0].Meaning {
-		t.Fatal("golden diagnoses must retain distinct correlated applications")
-	}
 	firstClassification := snapshot.Diagnoses[0].Classifications[0]
-	secondClassification := snapshot.Diagnoses[1].Classifications[0]
 	if !firstClassification.Follow || firstClassification.Violation {
 		t.Fatalf("unexpected first diagnosis action flags: %#v", firstClassification)
 	}
-	if secondClassification.Follow || !secondClassification.Violation {
-		t.Fatalf("unexpected second diagnosis action flags: %#v", secondClassification)
-	}
-	if snapshot.ActionTimeClassification == nil {
-		t.Fatal("expected structured action-time classification")
-	}
-	connection := snapshot.Diagnoses[0].PlayConnections[0]
-	if len(connection.Prerequisites) != 2 ||
-		connection.Prerequisites[0].StableCardID != 8 ||
-		connection.Prerequisites[1].StableCardID != 9 {
-		t.Fatalf("golden Play Connection lost ordered prerequisites: %#v", connection)
-	}
-	obligation := snapshot.Diagnoses[0].ConnectionObligations[0]
-	if obligation.OwnerPlayer != 1 ||
-		len(obligation.Candidates) != 2 ||
-		obligation.CurrentCandidateIndex != 0 {
-		t.Fatalf("golden Connection Obligation is incomplete: %#v", obligation)
-	}
-	if len(snapshot.Consensus.Applications) == 0 ||
-		len(snapshot.Consensus.CardBeliefs) == 0 ||
-		len(snapshot.ViolationWarnings) == 0 {
-		t.Fatal("golden transport must exercise consensus and existential warnings")
-	}
-
-	projection := newResearchHSMLegalProjection(
-		snapshot.AuthorityLegalActionProjection,
-	)
 	messageIdentity := golden.SnapshotMessage.researchHSMResponseWire
-	if projection.Digest != messageIdentity.AuthorityLegalProjectionDigest {
-		t.Fatal("golden response digest does not bind its exact legal projection")
+	if golden.SnapshotPending != messageIdentity ||
+		golden.SnapshotFailure.researchHSMResponseWire != messageIdentity ||
+		messageIdentity.ActorPlayer != 0 {
+		t.Fatal("golden pending, success, failure, or actor identities drifted")
 	}
-	request := &ResearchHSMSnapshotRequest{
-		ServerRequestID:          messageIdentity.ServerRequestID,
-		ClientRequestID:          messageIdentity.ClientRequestID,
-		ArchiveGenerationID:      messageIdentity.ArchiveGenerationID,
-		TargetBoundary:           messageIdentity.TargetBoundary,
-		EvidenceBoundary:         messageIdentity.EvidenceBoundary,
-		PerspectivePlayer:        messageIdentity.PerspectivePlayer,
-		ActorPlayer:              0,
-		SemanticProfileID:        messageIdentity.SemanticProfileID,
-		AuthorityLegalProjection: projection,
+	snapshotJSON, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("failed to forward the canonical snapshot: %v", err)
 	}
-	if err := snapshot.validateForRequest(request); err != nil {
-		t.Fatalf("golden success payload is not publishable: %v", err)
+	if bytes.Contains(snapshotJSON, []byte(`"world_ids"`)) ||
+		!bytes.Contains(snapshotJSON, []byte(`"clause_ids"`)) {
+		t.Fatalf("snapshot did not preserve the privacy-safe guard: %s", snapshotJSON)
 	}
-	if err := golden.SnapshotFailure.Failure.validateForRequest(request); err != nil {
-		t.Fatalf("golden typed failure is not publishable: %v", err)
+	failureJSON, err := json.Marshal(golden.SnapshotFailure.Failure)
+	if err != nil {
+		t.Fatalf("failed to forward the canonical failure: %v", err)
+	}
+	if !bytes.Contains(failureJSON, []byte(`"coordinate_kind":["stable_card"]`)) ||
+		bytes.Contains(failureJSON, []byte(`"valid"`)) {
+		t.Fatalf("failure did not preserve the trimmed canonical core: %s", failureJSON)
 	}
 	if err := golden.PhysicalTruthMessage.Overlay.validate(); err != nil {
 		t.Fatalf("golden Physical Truth is not publishable: %v", err)
-	}
-	if golden.SnapshotPending != messageIdentity {
-		t.Fatal("golden pending and success identities drifted")
 	}
 }
 

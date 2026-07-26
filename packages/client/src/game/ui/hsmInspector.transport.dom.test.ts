@@ -144,8 +144,8 @@ describe("HSM transport correlation", () => {
 
     handleHSMSnapshot(golden.snapshotMessage);
     expect(document.querySelector("#hsm-debug-loading")).toBeNull();
-    expect(document.querySelector("#hsm-debug-plain-text")?.textContent).toBe(
-      golden.snapshotMessage.snapshot.plain_text,
+    expect(document.querySelector("#hsm-debug-current")?.textContent).toContain(
+      golden.snapshotMessage.snapshot.semantic_program_id,
     );
   });
 
@@ -154,7 +154,7 @@ describe("HSM transport correlation", () => {
     initHSMInspector(participantDebug, send as SendHSMCommand);
     handleHSMSnapshotPending(golden.snapshotPending);
     handleHSMSnapshot(golden.snapshotMessage);
-    expect(document.querySelector("#hsm-debug-plain-text")).not.toBeNull();
+    expect(document.querySelector("#hsm-debug-current")).not.toBeNull();
 
     initHSMInspector(
       {
@@ -164,7 +164,7 @@ describe("HSM transport correlation", () => {
       send as SendHSMCommand,
     );
 
-    expect(document.querySelector("#hsm-debug-plain-text")).toBeNull();
+    expect(document.querySelector("#hsm-debug-current")).toBeNull();
     expect(document.querySelector("#hsm-debug-loading")).not.toBeNull();
     expect(send).toHaveBeenLastCalledWith(
       "researchHSMRequest",
@@ -175,7 +175,7 @@ describe("HSM transport correlation", () => {
 
     handleHSMSnapshotPending(golden.snapshotPending);
     handleHSMSnapshot(golden.snapshotMessage);
-    expect(document.querySelector("#hsm-debug-plain-text")).toBeNull();
+    expect(document.querySelector("#hsm-debug-current")).toBeNull();
     expect(document.querySelector("#hsm-debug-loading")).not.toBeNull();
   });
 
@@ -186,14 +186,13 @@ describe("HSM transport correlation", () => {
 
     const drawer =
       document.querySelector("#hsm-debug-drawer")?.textContent ?? "";
-    expect(drawer).toContain("HSM Diagnoses (2)");
-    expect(drawer).toContain("focused-clue");
-    expect(drawer).toContain("save-principle");
+    expect(drawer).toContain("HSM Diagnoses (1)");
+    expect(drawer).toContain("hierarchy-resolved");
     expect(drawer).toContain("Play Connections");
-    expect(drawer).toContain("ordered prerequisites: #8 mask 4 → #9 mask 8");
     expect(drawer).toContain("Connection Obligations");
-    expect(drawer).toContain("owner player 2");
-    expect(drawer).toContain("Existential violation warnings");
+    expect(drawer).toContain(
+      golden.snapshotMessage.snapshot.semantic_program_id,
+    );
 
     destroyHSMInspector();
     initHSMInspector(participantDebug, noOpSend as SendHSMCommand);

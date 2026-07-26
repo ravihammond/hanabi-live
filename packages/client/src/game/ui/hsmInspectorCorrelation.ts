@@ -15,6 +15,7 @@ export interface PendingHSMResponse {
   readonly targetBoundary: number;
   readonly evidenceBoundary: number;
   readonly perspectivePlayer: number;
+  readonly actorPlayer: number;
   readonly semanticProfileID: number | null;
   readonly authorityLegalProjectionDigest: string | null;
 }
@@ -35,6 +36,7 @@ export function bindPendingSnapshot(
     pending.serverRequestID !== null
     || !matchesSnapshotCoordinates(message, pending)
     || message.protocolVersion !== HSM_PROTOCOL_VERSION
+    || message.actorPlayer !== pending.actorPlayer
     || message.semanticProfileID < 0
     || !message.authorityLegalProjectionDigest.startsWith("sha256:")
   ) {
@@ -59,6 +61,7 @@ export function matchesPendingSnapshotResponse(
     && message.serverRequestID === pending.serverRequestID
     && pending.semanticProfileID !== null
     && message.semanticProfileID === pending.semanticProfileID
+    && message.actorPlayer === pending.actorPlayer
     && pending.authorityLegalProjectionDigest !== null
     && message.authorityLegalProjectionDigest
       === pending.authorityLegalProjectionDigest
@@ -153,9 +156,7 @@ function matchesPhysicalTruthCoordinates(
 }
 
 export class HSMRequestTimeouts {
-  private snapshotTimeout:
-    | ReturnType<typeof globalThis.setTimeout>
-    | undefined;
+  private snapshotTimeout: ReturnType<typeof globalThis.setTimeout> | undefined;
   private physicalTruthTimeout:
     | ReturnType<typeof globalThis.setTimeout>
     | undefined;

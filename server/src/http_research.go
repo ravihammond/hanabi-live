@@ -758,12 +758,6 @@ func researchPublishHSMSnapshot(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"detail": "HSM snapshot response identity is not pending."})
 		return
 	}
-	if err := publication.Snapshot.validateForRequest(request); err != nil {
-		session.HSMMutex.Unlock()
-		researchSessionsMutex.Unlock()
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
-		return
-	}
 	if request.DeliveryInProgress {
 		session.HSMMutex.Unlock()
 		researchSessionsMutex.Unlock()
@@ -834,12 +828,6 @@ func researchPublishHSMSnapshotFailure(c *gin.Context) {
 		session.HSMMutex.Unlock()
 		researchSessionsMutex.Unlock()
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "HSM snapshot failure error is required."})
-		return
-	}
-	if err := publication.Failure.validateForRequest(request); err != nil {
-		session.HSMMutex.Unlock()
-		researchSessionsMutex.Unlock()
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
 		return
 	}
 	if request.DeliveryInProgress {

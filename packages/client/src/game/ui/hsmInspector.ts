@@ -1,6 +1,5 @@
 import {
   HSM_PROTOCOL_VERSION,
-  type HSMActionTimeClassification,
   type HSMCardBelief,
   type HSMClassification,
   type HSMConnectionObligation,
@@ -22,7 +21,6 @@ import {
   type HSMSnapshotPendingMessage,
   type HSMSnapshotRejectedMessage,
   type HSMSnapshotUnavailableMessage,
-  type HSMViolationWarning,
   type SendHSMCommand,
 } from "./hsmInspectorContract";
 import {
@@ -415,6 +413,7 @@ function requestSnapshot() {
     targetBoundary: state.targetBoundary,
     evidenceBoundary: state.evidenceBoundary,
     perspectivePlayer: state.perspectivePlayer,
+    actorPlayer: state.actorPlayer,
     semanticProfileID: null,
     authorityLegalProjectionDigest: null,
   };
@@ -740,17 +739,13 @@ function buildSnapshot(snapshot: HSMSnapshot): HTMLElement {
   const content = element("div", "hsm-debug-content");
   content.append(
     labelledValue(
-      "Immutable recorded action-time classification",
-      actionTimeClassificationSummary(snapshot.action_time_classification),
-      "hsm-debug-recorded",
-    ),
-    labelledValue(
       "Canonical diagnostic result",
       `generation ${snapshot.generation_id}`
         + ` | target ${snapshot.target_boundary}`
         + ` | evidence ${snapshot.evidence_boundary}`
         + ` | perspective ${snapshot.perspective_player + 1}`
-        + ` | semantic profile ${snapshot.semantic_profile_id}`,
+        + ` | semantic profile ${snapshot.semantic_profile_id}`
+        + ` | program ${snapshot.semantic_program_id}`,
       "hsm-debug-current",
     ),
     buildClassifications(
@@ -760,12 +755,7 @@ function buildSnapshot(snapshot: HSMSnapshot): HTMLElement {
     buildMistakenActions(snapshot.mistaken_actions),
     buildProjection("Consensus projection", snapshot.consensus),
     buildDiagnoses(snapshot.diagnoses),
-    buildViolationWarnings(snapshot.violation_warnings),
   );
-  const plain = document.createElement("pre");
-  plain.id = "hsm-debug-plain-text";
-  plain.textContent = snapshot.plain_text;
-  content.append(labelledControl("Plain-text diagnostic output", plain));
   return content;
 }
 
@@ -792,28 +782,6 @@ function buildDiagnoses(diagnoses: readonly HSMDiagnosis[]): HTMLElement {
   for (const diagnosis of diagnoses) {
     section.append(buildProjection(diagnosis.label, diagnosis));
   }
-  return section;
-}
-
-function buildViolationWarnings(
-  warnings: readonly HSMViolationWarning[],
-): HTMLElement {
-  const section = element("section", "hsm-debug-panel");
-  section.append(textElement("h3", "Existential violation warnings"));
-  if (warnings.length === 0) {
-    section.append(textElement("p", "None"));
-    return section;
-  }
-  const list = document.createElement("ul");
-  for (const warning of warnings) {
-    list.append(
-      textElement(
-        "li",
-        `Action ${warning.action_id}: ${warning.diagnosis_count} of ${warning.total_diagnoses} diagnoses`,
-      ),
-    );
-  }
-  section.append(list);
   return section;
 }
 
@@ -1084,18 +1052,6 @@ function selectAction(actionID: number) {
   }
   state.selectedActionID = actionID;
   render();
-}
-
-function actionTimeClassificationSummary(
-  record: HSMActionTimeClassification | null,
-): string {
-  if (record === null) {
-    return "Not recorded";
-  }
-  return (
-    `Action ${record.selected_action_id} | Follow: ${record.final_follow ? "yes" : "no"}`
-    + ` | Violation: ${record.final_violation ? "yes" : "no"}`
-  );
 }
 
 function buildRestoreHandle(): HTMLButtonElement {
