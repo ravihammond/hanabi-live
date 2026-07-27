@@ -59,7 +59,7 @@ body.hsm-debug-authorized {
 }
 
 .hsm-debug-toolbar strong {
-  color: #fff;
+  color: #d2b8f2;
   font-size: 14px;
 }
 
@@ -178,12 +178,6 @@ body.hsm-debug-authorized {
   padding-left: 18px;
 }
 
-.hsm-debug-card-badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
 .hsm-debug-actions {
   display: flex;
   flex-wrap: wrap;
@@ -198,23 +192,61 @@ body.hsm-debug-authorized {
   box-shadow: 0 0 0 2px #6aa8db;
 }
 
-.hsm-debug-card-badge {
-  padding: 5px 7px;
-  border: 1px solid #56717c;
-  border-radius: 999px;
-  background: #1b2c33;
-  color: #e8f2f5;
+.hsm-debug-ledger-tabs {
+  position: sticky;
+  z-index: 1;
+  top: 53px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  background: #111c20;
 }
 
-.hsm-debug-card-summary {
-  padding: 5px 7px;
-  border-bottom: 1px dotted #78909a;
-  color: #cbd8dd;
-}
-
-.hsm-debug-card-badge[aria-pressed="true"] {
+.hsm-debug-ledger-tab[aria-pressed="true"] {
   border-color: #8bc9f4;
-  box-shadow: 0 0 0 2px #3a7196;
+  background: #225a80;
+  box-shadow: inset 0 -2px #9bd0fa;
+}
+
+.hsm-debug-ledger-table {
+  width: calc(100% - 20px);
+  margin: 10px;
+  border-collapse: collapse;
+}
+
+.hsm-debug-ledger-table th,
+.hsm-debug-ledger-table td {
+  padding: 5px;
+  border-bottom: 1px solid #34464d;
+  text-align: left;
+}
+
+.hsm-debug-ledger-table button {
+  width: 100%;
+  padding: 6px;
+  text-align: left;
+}
+
+.hsm-debug-ledger-table button[aria-pressed="true"] {
+  border-color: #8bc9f4;
+  box-shadow: inset 3px 0 #6aa8db;
+}
+
+.hsm-debug-ledger-detail {
+  margin: 10px;
+}
+
+.hsm-debug-diagnosis-alternative {
+  margin: 10px 0;
+  padding: 10px;
+  border: 1px solid #52656d;
+  border-left: 3px solid #8f68c9;
+  border-radius: 4px;
+  background: #142126;
+}
+
+.hsm-debug-diagnosis-alternative > h3 {
+  margin: 0 0 8px;
+  color: #d2b8f2;
 }
 
 .hsm-action-follow {
@@ -227,6 +259,16 @@ body.hsm-debug-authorized {
 
 .hsm-action-neutral {
   color: #b9c4c8;
+}
+
+[data-hsm-action-id].hsm-board-action-follow {
+  outline: 3px solid #55c870;
+  outline-offset: 2px;
+}
+
+[data-hsm-action-id].hsm-board-action-violation {
+  outline: 3px dashed #ef625b;
+  outline-offset: 2px;
 }
 
 .hsm-debug-physical-truth-panel {

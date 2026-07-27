@@ -1,28 +1,28 @@
-import {
-  HSM_PROTOCOL_VERSION,
-  type HSMCardBelief,
-  type HSMClassification,
-  type HSMConnectionObligation,
-  type HSMConventionApplication,
-  type HSMDebugInit,
-  type HSMDiagnosis,
-  type HSMDiagnosticProjection,
-  type HSMMistakenAction,
-  type HSMPhysicalTruthFailureMessage,
-  type HSMPhysicalTruthMessage,
-  type HSMPhysicalTruthOverlay,
-  type HSMPhysicalTruthPendingMessage,
-  type HSMPhysicalTruthRejectedMessage,
-  type HSMPlayConnection,
-  type HSMSemanticValue,
-  type HSMSnapshot,
-  type HSMSnapshotFailureMessage,
-  type HSMSnapshotMessage,
-  type HSMSnapshotPendingMessage,
-  type HSMSnapshotRejectedMessage,
-  type HSMSnapshotUnavailableMessage,
-  type SendHSMCommand,
+import type {
+  HSMClassification,
+  HSMConnectionObligation,
+  HSMDebugInit,
+  HSMDiagnosis,
+  HSMPhysicalTruthFailureMessage,
+  HSMPhysicalTruthMessage,
+  HSMPhysicalTruthOverlay,
+  HSMPhysicalTruthPendingMessage,
+  HSMPhysicalTruthRejectedMessage,
+  HSMPlayConnection,
+  HSMSemanticValue,
+  HSMSnapshot,
+  HSMSnapshotFailureMessage,
+  HSMSnapshotMessage,
+  HSMSnapshotPendingMessage,
+  HSMSnapshotRejectedMessage,
+  HSMSnapshotUnavailableMessage,
+  SendHSMCommand,
 } from "./hsmInspectorContract";
+import { HSM_PROTOCOL_VERSION } from "./hsmInspectorContract";
+import type {
+  PendingHSMPhysicalTruth,
+  PendingHSMResponse,
+} from "./hsmInspectorCorrelation";
 import {
   bindPendingPhysicalTruth,
   bindPendingSnapshot,
@@ -31,8 +31,6 @@ import {
   matchesPendingPhysicalTruthResponse,
   matchesPendingSnapshotRejection,
   matchesPendingSnapshotResponse,
-  type PendingHSMPhysicalTruth,
-  type PendingHSMResponse,
 } from "./hsmInspectorCorrelation";
 
 export type {
@@ -67,7 +65,7 @@ interface InspectorState {
   pendingPhysicalTruth: PendingHSMPhysicalTruth | null;
   physicalTruthOverlay: HSMPhysicalTruthOverlay | null;
   physicalTruthFailure: string | null;
-  cardLabels: "badges" | "summary" | "off";
+  selectedLedger: "action" | "card";
   selectedCardID: number | null;
   selectedActionID: number | null;
   snapshot: HSMSnapshot | null;
@@ -77,7 +75,6 @@ interface InspectorState {
 
 interface InspectorPreferences {
   readonly drawerOpen: boolean;
-  readonly cardLabels: InspectorState["cardLabels"];
 }
 
 let config: HSMDebugInit | null = null;
@@ -136,7 +133,7 @@ export function initHSMInspector(
     pendingPhysicalTruth: null,
     physicalTruthOverlay: null,
     physicalTruthFailure: null,
-    cardLabels: preferences?.cardLabels ?? "badges",
+    selectedLedger: "action",
     selectedCardID: null,
     selectedActionID: null,
     snapshot: null,
@@ -147,6 +144,7 @@ export function initHSMInspector(
   root.id = "hsm-debug-root";
   document.body.append(root);
   document.body.classList.add("hsm-debug-authorized");
+  document.addEventListener("click", handleFullDetailsClick);
   render();
   requestSnapshot();
 }
@@ -161,6 +159,8 @@ export function destroyHSMInspector(): void {
 
 function teardownHSMInspector() {
   requestTimeouts.clearAll();
+  clearBoardActionAnnotations();
+  document.removeEventListener("click", handleFullDetailsClick);
   root?.remove();
   root = null;
   config = null;
@@ -488,16 +488,86 @@ function render() {
     "hsm-inspection-read-only",
     isHSMInspectionReadOnly(),
   );
+  renderBoardActionAnnotations();
+  globalThis.dispatchEvent(new Event("hsm-diagnostic-render"));
+}
+
+function clearBoardActionAnnotations() {
+  for (const action of document.querySelectorAll<HTMLElement>(
+    "[data-hsm-action-id]",
+  )) {
+    action.classList.remove(
+      "hsm-board-action-follow",
+      "hsm-board-action-violation",
+    );
+    delete action.dataset["hsmClassification"];
+  }
+}
+
+function renderBoardActionAnnotations() {
+  clearBoardActionAnnotations();
+  for (const action of document.querySelectorAll<HTMLElement>(
+    '[data-hsm-action-id][data-hsm-authority-legal="true"]',
+  )) {
+    const actionID = Number(action.dataset["hsmActionId"]);
+    const annotation = getHSMActionAnnotation(actionID);
+    if (annotation === "follow") {
+      action.classList.add("hsm-board-action-follow");
+      action.dataset["hsmClassification"] = "Unanimous Follow";
+    } else if (annotation === "violation") {
+      action.classList.add("hsm-board-action-violation");
+      action.dataset["hsmClassification"] = "Unanimous Violation";
+    }
+  }
+}
+
+export type HSMActionAnnotation = "follow" | "violation" | null;
+
+export function getHSMActionAnnotation(actionID: number): HSMActionAnnotation {
+  const snapshot = state?.snapshot;
+  if (
+    snapshot === null
+    || snapshot === undefined
+    || state?.loading === true
+    || state?.failure !== null
+    || snapshot.perspective_player !== state.actorPlayer
+  ) {
+    return null;
+  }
+  const classifications = snapshot.diagnoses.map((diagnosis) =>
+    finalActionClassification(diagnosis, actionID),
+  );
+  if (classifications.includes(undefined)) {
+    return null;
+  }
+  if (
+    classifications.every(
+      (classification) =>
+        classification?.follow === true && !classification.violation,
+    )
+  ) {
+    return "follow";
+  }
+  if (
+    classifications.every(
+      (classification) =>
+        classification?.violation === true && !classification.follow,
+    )
+  ) {
+    return "violation";
+  }
+  return null;
 }
 
 function buildToolbar(): HTMLElement {
   const toolbar = element("header", "hsm-debug-toolbar");
   toolbar.id = "hsm-debug-toolbar";
+  const label = textElement("strong", "HSM Debug");
+  label.className = "hsm-debug-label-purple";
   toolbar.append(
-    textElement("strong", "HSM Debug"),
+    label,
     textElement("span", capabilityLabel()),
     labelledControl("Perspective", buildPerspectiveSelect()),
-    labelledControl("Card labels", buildCardLabelSelect()),
     buildTruthControl(),
     buildModeControl(),
   );
@@ -547,24 +617,6 @@ function buildPerspectiveSelect(): HTMLSelectElement {
       : Number(select.value);
     state.physicalTruth = false;
     renderAndRequest();
-  });
-  return select;
-}
-
-function buildCardLabelSelect(): HTMLSelectElement {
-  const select = document.createElement("select");
-  select.id = "hsm-debug-card-labels";
-  select.add(new Option("Badges", "badges"));
-  select.add(new Option("Hover summaries", "summary"));
-  select.add(new Option("Off", "off"));
-  select.value = state?.cardLabels ?? "badges";
-  select.addEventListener("change", () => {
-    if (state === null) {
-      return;
-    }
-    state.cardLabels = select.value as InspectorState["cardLabels"];
-    savePreferences();
-    render();
   });
   return select;
 }
@@ -748,155 +800,399 @@ function buildSnapshot(snapshot: HSMSnapshot): HTMLElement {
         + ` | program ${snapshot.semantic_program_id}`,
       "hsm-debug-current",
     ),
-    buildClassifications(
-      snapshot.aggregate_action_classifications,
-      "Aggregate action classifications",
-    ),
-    buildMistakenActions(snapshot.mistaken_actions),
-    buildProjection("Consensus projection", snapshot.consensus),
-    buildDiagnoses(snapshot.diagnoses),
+    buildLedgers(snapshot),
   );
   return content;
 }
 
-function buildProjection(
-  title: string,
-  projection: HSMDiagnosticProjection,
-): HTMLElement {
-  const section = element("section", "hsm-debug-projection");
+function buildLedgers(snapshot: HSMSnapshot): HTMLElement {
+  const section = element("section", "hsm-debug-ledgers");
+  const tabs = element("nav", "hsm-debug-ledger-tabs");
+  const actionTab = button(
+    "Action Ledger",
+    "hsm-debug-action-ledger-tab",
+    () => {
+      selectLedger("action");
+    },
+  );
+  const cardTab = button("Card Ledger", "hsm-debug-card-ledger-tab", () => {
+    selectLedger("card");
+  });
+  for (const [tab, ledger] of [
+    [actionTab, "action"],
+    [cardTab, "card"],
+  ] as const) {
+    tab.className = "hsm-debug-ledger-tab";
+    tab.setAttribute("aria-pressed", String(state?.selectedLedger === ledger));
+  }
+  tabs.append(actionTab, cardTab);
   section.append(
-    textElement("h2", title),
-    buildApplications(projection.applications),
-    buildCardBeliefs(projection.card_beliefs),
-    buildPlayConnections(projection.play_connections),
-    buildConnectionObligations(projection.connection_obligations),
-    buildClassifications(projection.classifications),
-    buildSemanticValues(projection.semantic_values),
+    tabs,
+    state?.selectedLedger === "card"
+      ? buildCardLedger(snapshot)
+      : buildActionLedger(snapshot),
   );
   return section;
 }
 
-function buildDiagnoses(diagnoses: readonly HSMDiagnosis[]): HTMLElement {
-  const section = element("section", "hsm-debug-diagnoses");
-  section.append(textElement("h2", `HSM Diagnoses (${diagnoses.length})`));
-  for (const diagnosis of diagnoses) {
-    section.append(buildProjection(diagnosis.label, diagnosis));
-  }
-  return section;
-}
-
-function buildMistakenActions(
-  mistakenActions: readonly HSMMistakenAction[],
-): HTMLElement {
-  const section = element("section", "hsm-debug-panel");
-  section.append(textElement("h3", "Universal Mistaken Actions"));
-  if (mistakenActions.length === 0) {
-    section.append(textElement("p", "None"));
-    return section;
-  }
-  const list = document.createElement("ul");
-  for (const mistaken of mistakenActions) {
-    list.append(
-      textElement(
-        "li",
-        `Transition ${mistaken.transition_index}`
-          + ` | actor ${mistaken.historical_actor + 1}`
-          + ` | action ${mistaken.action_id}`
-          + ` | classifiers: ${mistaken.violating_classifiers.join(", ")}`,
+function buildActionLedger(snapshot: HSMSnapshot): HTMLElement {
+  const wrapper = element("section", "hsm-debug-ledger");
+  const actionIDs = [
+    ...new Set(
+      snapshot.diagnoses.flatMap((diagnosis) =>
+        diagnosis.classifications.map(
+          (classification) => classification.action_id,
+        ),
       ),
+    ),
+  ].toSorted((left, right) => left - right);
+  wrapper.append(
+    buildLedgerTable(
+      "Action",
+      actionIDs.map((actionID) => {
+        const row = button(`Action ${actionID}`, "", () => {
+          selectAction(actionID);
+        });
+        row.removeAttribute("id");
+        row.dataset["hsmLedgerAction"] = String(actionID);
+        row.setAttribute(
+          "aria-pressed",
+          String(state?.selectedActionID === actionID),
+        );
+        return row;
+      }),
+    ),
+  );
+  const selectedActionID = state?.selectedActionID ?? null;
+  if (selectedActionID === null) {
+    wrapper.append(
+      buildEmptyLedgerDetail("Select an action row for full details."),
     );
+  } else {
+    wrapper.append(buildActionLedgerDetail(snapshot, selectedActionID));
   }
-  section.append(list);
-  return section;
+  return wrapper;
 }
 
-function buildApplications(
-  applications: readonly HSMConventionApplication[],
+function buildCardLedger(snapshot: HSMSnapshot): HTMLElement {
+  const wrapper = element("section", "hsm-debug-ledger");
+  const cardIDs = diagnosticCardIDs(snapshot);
+  wrapper.append(
+    buildLedgerTable(
+      "Stable Card",
+      cardIDs.map((cardID) => {
+        const row = button(`Card #${cardID}`, "", () => {
+          selectCard(cardID);
+        });
+        row.removeAttribute("id");
+        row.dataset["hsmLedgerCard"] = String(cardID);
+        row.setAttribute(
+          "aria-pressed",
+          String(state?.selectedCardID === cardID),
+        );
+        return row;
+      }),
+    ),
+  );
+  const selectedCardID = state?.selectedCardID ?? null;
+  if (selectedCardID === null) {
+    wrapper.append(
+      buildEmptyLedgerDetail("Select a card row for full details."),
+    );
+  } else {
+    wrapper.append(buildCardLedgerDetail(snapshot, selectedCardID));
+  }
+  return wrapper;
+}
+
+function buildLedgerTable(
+  heading: string,
+  rows: readonly HTMLButtonElement[],
+): HTMLTableElement {
+  const table = document.createElement("table");
+  table.className = "hsm-debug-ledger-table";
+  const head = table.createTHead().insertRow();
+  head.append(textElement("th", heading));
+  const body = table.createTBody();
+  for (const row of rows) {
+    body.insertRow().insertCell().append(row);
+  }
+  if (rows.length === 0) {
+    body.insertRow().insertCell().textContent =
+      "No valid rows at this boundary";
+  }
+  return table;
+}
+
+function buildEmptyLedgerDetail(message: string): HTMLElement {
+  const detail = textElement("section", message);
+  detail.id = "hsm-debug-ledger-detail";
+  detail.className = "hsm-debug-panel";
+  return detail;
+}
+
+function buildActionLedgerDetail(
+  snapshot: HSMSnapshot,
+  actionID: number,
 ): HTMLElement {
-  const section = element("section", "hsm-debug-panel");
-  section.append(textElement("h3", "Convention applications"));
-  if (applications.length === 0) {
-    section.append(textElement("p", "None at this boundary"));
-    return section;
+  const detail = element("section", "hsm-debug-ledger-detail");
+  detail.id = "hsm-debug-ledger-detail";
+  const classifications = snapshot.diagnoses.map((diagnosis) =>
+    finalActionClassification(diagnosis, actionID),
+  );
+  const violationCount = classifications.filter(
+    (classification) => classification?.violation === true,
+  ).length;
+  const followCount = classifications.filter(
+    (classification) => classification?.follow === true,
+  ).length;
+  const total = snapshot.diagnoses.length;
+  let summary = `No Follow or Violation \u2014 ${total} diagnoses`;
+  if (followCount === total && violationCount === 0) {
+    summary = `Unanimous Follow \u2014 ${total} of ${total} diagnoses`;
+  } else if (violationCount === total && followCount === 0) {
+    summary = `Unanimous Violation \u2014 ${total} of ${total} diagnoses`;
+  } else if (violationCount > 0) {
+    summary = `Violation possible \u2014 ${violationCount} of ${total} diagnoses`;
   }
-  const list = document.createElement("ul");
-  for (const application of applications) {
-    list.append(
-      textElement(
-        "li",
-        `${application.rule} → ${application.meaning}`
-          + ` | transition ${application.source_transition}`
-          + ` | actor ${application.historical_actor + 1}`
-          + ` | observer ${application.outer_observer + 1}`
-          + ` | ${application.subject_kind} #${application.subject_id}`
-          + ` | provenance ${application.provenance_id}`
-          + ` | applicable: ${application.applicable ? "yes" : "no"}`,
-      ),
+  detail.append(
+    textElement("h2", `Action ${actionID}`),
+    textElement("p", summary),
+  );
+  for (const [index, diagnosis] of snapshot.diagnoses.entries()) {
+    const alternative = buildDiagnosisAlternative(diagnosis, index);
+    const rows = diagnosis.classifications.filter(
+      (classification) => classification.action_id === actionID,
     );
-  }
-  section.append(list);
-  return section;
-}
-
-function buildCardBeliefs(beliefs: readonly HSMCardBelief[]): HTMLElement {
-  const section = element("section", "hsm-debug-panel");
-  section.append(textElement("h3", "Observer-relative card beliefs"));
-  if (beliefs.length === 0) {
-    section.append(textElement("p", "No card beliefs at this boundary"));
-    return section;
-  }
-  if (state?.cardLabels === "off") {
-    section.append(textElement("p", "Card labels are hidden"));
-    return section;
-  }
-  const badges = element("div", "hsm-debug-card-badges");
-  for (const belief of beliefs) {
-    const stableCardID = belief.stable_card_id;
-    const summary = `candidate mask ${belief.candidate_identity_mask}`;
-    const reasons = belief.reason_identity_masks
-      .map((reason) => `${reason.reason}: mask ${reason.identity_mask}`)
-      .join(" | ");
-    if (state?.cardLabels === "summary") {
-      const cardSummary = textElement("span", `#${stableCardID} | ${summary}`);
-      cardSummary.className = "hsm-debug-card-summary";
-      cardSummary.title = reasons;
-      badges.append(cardSummary);
-      continue;
+    alternative.append(buildClassifications(rows));
+    const evidence = diagnosis.semantic_values.filter(
+      (value) => value.action_id === actionID,
+    );
+    if (evidence.length > 0) {
+      const explanation = buildSemanticValues(evidence);
+      explanation.querySelector("h3")!.textContent =
+        "HSM Semantic Evidence (explanation)";
+      alternative.append(explanation);
     }
-    const badge = button(`#${stableCardID} | ${summary}`, "", () => {
-      selectCard(stableCardID);
-    });
-    badge.removeAttribute("id");
-    badge.className = "hsm-debug-card-badge";
-    badge.title = reasons;
-    badge.setAttribute(
-      "aria-pressed",
-      String(state?.selectedCardID === stableCardID),
+    alternative.append(
+      buildPlayConnections(diagnosis.play_connections),
+      buildConnectionObligations(diagnosis.connection_obligations),
     );
-    badges.append(badge);
+    detail.append(alternative);
   }
-  section.append(badges);
-  const selected = beliefs.find(
-    (belief) => belief.stable_card_id === state?.selectedCardID,
+  return detail;
+}
+
+function buildCardLedgerDetail(
+  snapshot: HSMSnapshot,
+  cardID: number,
+): HTMLElement {
+  const detail = element("section", "hsm-debug-ledger-detail");
+  detail.id = "hsm-debug-ledger-detail";
+  detail.append(textElement("h2", `Stable Card ${cardID}`));
+  for (const [index, diagnosis] of snapshot.diagnoses.entries()) {
+    const alternative = buildDiagnosisAlternative(diagnosis, index);
+    const belief = diagnosis.card_beliefs.find(
+      (candidate) => candidate.stable_card_id === cardID,
+    );
+    alternative.append(
+      textElement(
+        "p",
+        belief === undefined
+          ? "No card belief in this diagnosis."
+          : `Candidate identity mask: ${belief.candidate_identity_mask} | ${
+              belief.reason_identity_masks.length === 0
+                ? "no labelled reason"
+                : belief.reason_identity_masks
+                    .map(
+                      (reason) =>
+                        `${reason.reason}: mask ${reason.identity_mask}`,
+                    )
+                    .join(" | ")
+            }`,
+      ),
+      buildPlayConnections(
+        diagnosis.play_connections.filter(
+          (connection) =>
+            connection.focus_card_id === cardID
+            || connection.prerequisites.some(
+              (card) => card.stable_card_id === cardID,
+            ),
+        ),
+      ),
+      buildConnectionObligations(
+        diagnosis.connection_obligations.filter(
+          (obligation) =>
+            obligation.focus_card_id === cardID
+            || obligation.candidates.some(
+              (card) => card.stable_card_id === cardID,
+            ),
+        ),
+      ),
+    );
+    detail.append(alternative);
+  }
+  return detail;
+}
+
+function buildDiagnosisAlternative(
+  diagnosis: HSMDiagnosis,
+  index: number,
+): HTMLElement {
+  const alternative = element("article", "hsm-debug-diagnosis-alternative");
+  alternative.dataset["hsmDiagnosisLabel"] = diagnosis.label;
+  alternative.append(textElement("h3", `D${index + 1}`));
+  return alternative;
+}
+
+function finalActionClassification(
+  diagnosis: HSMDiagnosis,
+  actionID: number,
+): HSMClassification | undefined {
+  return (
+    diagnosis.classifications.find(
+      (classification) =>
+        classification.action_id === actionID
+        && classification.classifier === "hierarchy-resolved",
+    )
+    ?? diagnosis.classifications.find(
+      (classification) => classification.action_id === actionID,
+    )
   );
-  if (selected !== undefined) {
-    const details = element("section", "hsm-debug-panel");
-    details.append(
-      textElement("h3", `Selected Stable Card ${selected.stable_card_id}`),
-      textElement(
-        "p",
-        `Candidate identity mask: ${selected.candidate_identity_mask}`,
-      ),
-      textElement(
-        "p",
-        `Reasons: ${selected.reason_identity_masks
-          .map((reason) => `${reason.reason}: mask ${reason.identity_mask}`)
-          .join(" | ")}`,
-      ),
-    );
-    section.append(details);
+}
+
+function diagnosticCardIDs(snapshot: HSMSnapshot): readonly number[] {
+  const cardIDs = new Set<number>();
+  for (const diagnosis of snapshot.diagnoses) {
+    for (const belief of diagnosis.card_beliefs) {
+      cardIDs.add(belief.stable_card_id);
+    }
+    for (const connection of diagnosis.play_connections) {
+      cardIDs.add(connection.focus_card_id);
+      for (const card of connection.prerequisites) {
+        cardIDs.add(card.stable_card_id);
+      }
+    }
+    for (const obligation of diagnosis.connection_obligations) {
+      cardIDs.add(obligation.focus_card_id);
+      for (const card of obligation.candidates) {
+        cardIDs.add(card.stable_card_id);
+      }
+    }
   }
-  return section;
+  return [...cardIDs].toSorted((left, right) => left - right);
+}
+
+export function getHSMCardTooltipHTML(stableCardID: number): string {
+  const snapshot = state?.snapshot;
+  if (
+    snapshot === null
+    || snapshot === undefined
+    || state?.loading === true
+    || state?.failure !== null
+  ) {
+    return "";
+  }
+  const clauses: string[] = [];
+  for (const [index, diagnosis] of snapshot.diagnoses.entries()) {
+    const parts: string[] = [];
+    const belief = diagnosis.card_beliefs.find(
+      (candidate) => candidate.stable_card_id === stableCardID,
+    );
+    if (belief !== undefined) {
+      parts.push(
+        `candidate mask ${belief.candidate_identity_mask}`,
+        ...belief.reason_identity_masks.map(
+          (reason) => `${reason.reason}: mask ${reason.identity_mask}`,
+        ),
+      );
+    }
+    for (const connection of diagnosis.play_connections) {
+      if (
+        connection.focus_card_id === stableCardID
+        || connection.prerequisites.some(
+          (card) => card.stable_card_id === stableCardID,
+        )
+      ) {
+        const prerequisites = connection.prerequisites
+          .map((card) => `#${card.stable_card_id} mask ${card.identity_mask}`)
+          .join(" \u2192 ");
+        parts.push(
+          `Play Connection, ordered prerequisites: ${
+            prerequisites === "" ? "none" : prerequisites
+          }`,
+        );
+      }
+    }
+    for (const obligation of diagnosis.connection_obligations) {
+      if (
+        obligation.focus_card_id === stableCardID
+        || obligation.candidates.some(
+          (card) => card.stable_card_id === stableCardID,
+        )
+      ) {
+        const candidates = obligation.candidates
+          .map((card, candidateIndex) => {
+            const current =
+              candidateIndex === obligation.current_candidate_index
+                ? " (current)"
+                : "";
+            return `#${card.stable_card_id} mask ${card.identity_mask}${current}`;
+          })
+          .join(" \u2192 ");
+        parts.push(
+          `${obligation.kind} obligation, ordered candidates: ${candidates}`,
+        );
+      }
+    }
+    if (parts.length > 0) {
+      clauses.push(
+        `<span class="hsm-card-tooltip-clause"><strong>D${index + 1}:</strong> ${escapeHTML(
+          parts.join("; "),
+        )}.</span>`,
+      );
+    }
+  }
+  if (clauses.length === 0) {
+    return "";
+  }
+  return `${clauses.join(" ")} <button type="button" data-hsm-full-details="${
+    stableCardID
+  }">Full details</button>`;
+}
+
+export function hasHSMCardTooltip(stableCardID: number): boolean {
+  return getHSMCardTooltipHTML(stableCardID) !== "";
+}
+
+function handleFullDetailsClick(event: MouseEvent) {
+  const { target } = event;
+  if (!(target instanceof Element)) {
+    return;
+  }
+  const detailsButton = target.closest<HTMLElement>("[data-hsm-full-details]");
+  if (detailsButton === null || state === null) {
+    return;
+  }
+  const cardID = Number(detailsButton.dataset["hsmFullDetails"]);
+  if (!Number.isInteger(cardID)) {
+    return;
+  }
+  state.drawerOpen = true;
+  state.selectedLedger = "card";
+  state.selectedCardID = cardID;
+  savePreferences();
+  render();
+  globalThis.dispatchEvent(new Event("resize"));
+}
+
+function escapeHTML(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function buildPlayConnections(
@@ -912,12 +1208,14 @@ function buildPlayConnections(
   for (const connection of connections) {
     const prerequisites = connection.prerequisites
       .map((card) => `#${card.stable_card_id} mask ${card.identity_mask}`)
-      .join(" → ");
+      .join(" \u2192 ");
     list.append(
       textElement(
         "li",
         `Focus #${connection.focus_card_id} mask ${connection.focus_identity_mask}`
-          + ` | ordered prerequisites: ${prerequisites || "none"}`
+          + ` | ordered prerequisites: ${
+            prerequisites === "" ? "none" : prerequisites
+          }`
           + ` | transition ${connection.source_transition}`
           + ` | available boundary ${connection.available_from_boundary}`
           + ` | provenance ${connection.provenance_id}`,
@@ -945,7 +1243,7 @@ function buildConnectionObligations(
           index === obligation.current_candidate_index ? " (current)" : "";
         return `#${card.stable_card_id} mask ${card.identity_mask}${current}`;
       })
-      .join(" → ");
+      .join(" \u2192 ");
     list.append(
       textElement(
         "li",
@@ -1042,6 +1340,7 @@ function selectCard(stableCardID: number) {
   if (state === null) {
     return;
   }
+  state.selectedLedger = "card";
   state.selectedCardID = stableCardID;
   render();
 }
@@ -1050,7 +1349,16 @@ function selectAction(actionID: number) {
   if (state === null) {
     return;
   }
+  state.selectedLedger = "action";
   state.selectedActionID = actionID;
+  render();
+}
+
+function selectLedger(ledger: InspectorState["selectedLedger"]) {
+  if (state === null) {
+    return;
+  }
+  state.selectedLedger = ledger;
   render();
 }
 
@@ -1159,15 +1467,11 @@ function loadPreferences(key: string | null): InspectorPreferences | null {
       return null;
     }
     const value = JSON.parse(raw) as Partial<InspectorPreferences>;
-    if (
-      typeof value.drawerOpen !== "boolean"
-      || !["badges", "off", "summary"].includes(String(value.cardLabels))
-    ) {
+    if (typeof value.drawerOpen !== "boolean") {
       return null;
     }
     return {
       drawerOpen: value.drawerOpen,
-      cardLabels: value.cardLabels!,
     };
   } catch {
     return null;
@@ -1184,7 +1488,6 @@ function savePreferences() {
       key,
       JSON.stringify({
         drawerOpen: state.drawerOpen,
-        cardLabels: state.cardLabels,
       } satisfies InspectorPreferences),
     );
   } catch {

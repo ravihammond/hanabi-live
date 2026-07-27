@@ -19,9 +19,13 @@ import { globals } from "./UIGlobals";
 import * as arrows from "./arrows";
 import type { PlayerButton } from "./controls/PlayerButton";
 import { colorToColorIndex } from "./convert";
+import type { HSMActionAnnotation } from "./hsmInspector";
+import { getHSMActionAnnotation } from "./hsmInspector";
+import { drawLayer } from "./konvaHelpers";
 import * as turn from "./turn";
 
 export function checkLegal(): void {
+  clearHSMClueAnnotations();
   const clueTargetButtonGroup =
     globals.state.replay.hypothetical === null
       ? globals.elements.clueTargetButtonGroup
@@ -38,13 +42,8 @@ export function checkLegal(): void {
     | null
     | undefined;
 
-  if (
-    target === undefined
-    || target === null
-    || clueButton === undefined
-    || clueButton === null
-  ) {
-    // They have not selected a player or a clue type.
+  if (target === undefined || target === null) {
+    // They have not selected a player.
     globals.elements.giveClueButton!.setEnabled(false);
     return;
   }
@@ -56,6 +55,12 @@ export function checkLegal(): void {
   }
   if (who === currentPlayerIndex) {
     // They are in a hypothetical and trying to give a clue to the current player.
+    globals.elements.giveClueButton!.setEnabled(false);
+    return;
+  }
+  renderHSMClueAnnotations(who, currentPlayerIndex);
+  if (clueButton === undefined || clueButton === null) {
+    // They have not selected a clue type.
     globals.elements.giveClueButton!.setEnabled(false);
     return;
   }
@@ -90,6 +95,93 @@ export function checkLegal(): void {
 
   globals.elements.giveClueButton!.setEnabled(enabled);
 }
+
+function clearHSMClueAnnotations() {
+  for (const clueButton of [
+    ...globals.elements.colorClueButtons,
+    ...globals.elements.rankClueButtons,
+  ]) {
+    applyHSMClueAnnotation(clueButton, null);
+  }
+}
+
+function renderHSMClueAnnotations(target: number, actor: number) {
+  const { numPlayers } = globals.options;
+  const handSize = numPlayers <= 3 ? 5 : 4;
+  const relativeTarget = (target - actor - 1 + numPlayers) % numPlayers;
+  const clueBase = 2 * handSize + relativeTarget * 5;
+  for (const clueButton of [
+    ...globals.elements.colorClueButtons,
+    ...globals.elements.rankClueButtons,
+  ]) {
+    let actionID: number;
+    if (clueButton.clue.type === ClueType.Color) {
+      const colorIndex = colorToColorIndex(
+        clueButton.clue.value,
+        globals.variant,
+      );
+      if (colorIndex === undefined) {
+        continue;
+      }
+      const actionOffset = hsmColorActionOffset(colorIndex);
+      if (actionOffset === undefined) {
+        continue;
+      }
+      actionID = clueBase + actionOffset;
+    } else {
+      const rankBase = 2 * handSize + (numPlayers - 1) * 5;
+      actionID = rankBase + relativeTarget * 5 + clueButton.clue.value - 1;
+    }
+    applyHSMClueAnnotation(clueButton, getHSMActionAnnotation(actionID));
+  }
+}
+
+function hsmColorActionOffset(colorIndex: number): number | undefined {
+  switch (colorIndex) {
+    case 0:
+    case 1:
+    case 2: {
+      return colorIndex;
+    }
+
+    case 3: {
+      return 4;
+    }
+
+    case 4: {
+      return 3;
+    }
+
+    default: {
+      return undefined;
+    }
+  }
+}
+
+function applyHSMClueAnnotation(
+  clueButton: ColorButton | RankButton,
+  annotation: HSMActionAnnotation,
+) {
+  let stroke = "";
+  if (annotation === "follow") {
+    stroke = "#55c870";
+  } else if (annotation === "violation") {
+    stroke = "#ef625b";
+  }
+  clueButton.background.stroke(stroke);
+  clueButton.background.strokeWidth(annotation === null ? 0 : 3);
+  clueButton.background.dash(annotation === "violation" ? [8, 4] : []);
+  drawLayer(clueButton);
+}
+
+globalThis.addEventListener("hsm-diagnostic-render", () => {
+  if (
+    globals.elements.giveClueButton !== null
+    && globals.state.visibleState !== null
+  ) {
+    checkLegal();
+  }
+});
 
 function showClueMatch(target: number, clue: Clue): boolean {
   arrows.hideAll();

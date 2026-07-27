@@ -11,6 +11,7 @@ import { globals } from "./UIGlobals";
 import * as arrows from "./arrows";
 import { DOUBLE_TAP_DELAY_SECONDS } from "./constants";
 import * as cursor from "./cursor";
+import { hasHSMCardTooltip } from "./hsmInspector";
 import * as konvaTooltips from "./konvaTooltips";
 import * as notes from "./notes";
 
@@ -160,6 +161,7 @@ function checkShowNoteTooltip(card: HanabiCard) {
   if (
     card.noteIndicator.isVisible() === false
     && card.state.location !== "playStack"
+    && !hasHSMCardTooltip(card.state.order)
   ) {
     // Do not do anything if there is not a note on this card in hand.
     return;

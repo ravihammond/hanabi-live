@@ -7,6 +7,7 @@ import * as tooltips from "../../tooltips";
 import type { HanabiCard } from "./HanabiCard";
 import { globals } from "./UIGlobals";
 import { getCardOrStackBase } from "./getCardOrStackBase";
+import { getHSMCardTooltipHTML } from "./hsmInspector";
 
 const REMOVE_PIPE_KEYS = new ReadonlySet([
   "ArrowDown",
@@ -147,6 +148,13 @@ export function show(card: HanabiCard): void {
       shownNote += "<br><br>";
     }
     shownNote += card.suitDescriptionNote();
+  }
+  const diagnosticClauses = getHSMCardTooltipHTML(card.state.order);
+  if (diagnosticClauses !== "") {
+    if (shownNote !== "") {
+      shownNote += "<br><br>";
+    }
+    shownNote += diagnosticClauses;
   }
   tooltips.setInstanceContent(tooltip, shownNote);
   tooltips.open(tooltip);

@@ -5,6 +5,7 @@ import {
   hsmTransportGolden,
 } from "@hanabi-live/data";
 import { afterEach, describe, expect, jest, test } from "@jest/globals";
+// eslint-disable-next-line import-x/no-relative-packages
 import goldenFixture from "../../../../../testdata/research-hsm/transport-v1.json";
 import { gameCommands } from "./gameCommands";
 import {
@@ -38,10 +39,7 @@ function sendRecorder() {
   >();
 }
 
-function noOpSend(
-  _command: string,
-  _data: Readonly<Record<string, unknown>>,
-): void {
+function noOpSend(_command: string, _data: Readonly<Record<string, unknown>>) {
   // This test injects websocket messages through the normal command handlers.
 }
 
@@ -183,10 +181,15 @@ describe("HSM transport correlation", () => {
     initHSMInspector(participantDebug, noOpSend as SendHSMCommand);
     gameCommands.get("hsmSnapshotPending")!(golden.snapshotPending);
     gameCommands.get("hsmSnapshot")!(golden.snapshotMessage);
+    document
+      .querySelector<HTMLButtonElement>("[data-hsm-ledger-action='3']")
+      ?.click();
 
     const drawer =
       document.querySelector("#hsm-debug-drawer")?.textContent ?? "";
-    expect(drawer).toContain("HSM Diagnoses (1)");
+    expect(drawer).toContain("Action Ledger");
+    expect(drawer).toContain("Card Ledger");
+    expect(drawer).toContain("D1");
     expect(drawer).toContain("hierarchy-resolved");
     expect(drawer).toContain("Play Connections");
     expect(drawer).toContain("Connection Obligations");
