@@ -159,7 +159,6 @@ export function destroyHSMInspector(): void {
 
 function teardownHSMInspector() {
   requestTimeouts.clearAll();
-  clearBoardActionAnnotations();
   document.removeEventListener("click", handleFullDetailsClick);
   root?.remove();
   root = null;
@@ -488,37 +487,7 @@ function render() {
     "hsm-inspection-read-only",
     isHSMInspectionReadOnly(),
   );
-  renderBoardActionAnnotations();
   globalThis.dispatchEvent(new Event("hsm-diagnostic-render"));
-}
-
-function clearBoardActionAnnotations() {
-  for (const action of document.querySelectorAll<HTMLElement>(
-    "[data-hsm-action-id]",
-  )) {
-    action.classList.remove(
-      "hsm-board-action-follow",
-      "hsm-board-action-violation",
-    );
-    delete action.dataset["hsmClassification"];
-  }
-}
-
-function renderBoardActionAnnotations() {
-  clearBoardActionAnnotations();
-  for (const action of document.querySelectorAll<HTMLElement>(
-    '[data-hsm-action-id][data-hsm-authority-legal="true"]',
-  )) {
-    const actionID = Number(action.dataset["hsmActionId"]);
-    const annotation = getHSMActionAnnotation(actionID);
-    if (annotation === "follow") {
-      action.classList.add("hsm-board-action-follow");
-      action.dataset["hsmClassification"] = "Unanimous Follow";
-    } else if (annotation === "violation") {
-      action.classList.add("hsm-board-action-violation");
-      action.dataset["hsmClassification"] = "Unanimous Violation";
-    }
-  }
 }
 
 export type HSMActionAnnotation = "follow" | "violation" | null;
@@ -975,6 +944,7 @@ function buildActionLedgerDetail(
       alternative.append(explanation);
     }
     alternative.append(
+      buildCardBeliefs(diagnosis.card_beliefs),
       buildPlayConnections(diagnosis.play_connections),
       buildConnectionObligations(diagnosis.connection_obligations),
     );
@@ -992,43 +962,20 @@ function buildCardLedgerDetail(
   detail.append(textElement("h2", `Stable Card ${cardID}`));
   for (const [index, diagnosis] of snapshot.diagnoses.entries()) {
     const alternative = buildDiagnosisAlternative(diagnosis, index);
-    const belief = diagnosis.card_beliefs.find(
-      (candidate) => candidate.stable_card_id === cardID,
+    const { belief, connections, obligations } = cardDiagnostics(
+      diagnosis,
+      cardID,
     );
     alternative.append(
       textElement(
         "p",
         belief === undefined
           ? "No card belief in this diagnosis."
-          : `Candidate identity mask: ${belief.candidate_identity_mask} | ${
-              belief.reason_identity_masks.length === 0
-                ? "no labelled reason"
-                : belief.reason_identity_masks
-                    .map(
-                      (reason) =>
-                        `${reason.reason}: mask ${reason.identity_mask}`,
-                    )
-                    .join(" | ")
-            }`,
+          : cardBeliefText(belief),
       ),
-      buildPlayConnections(
-        diagnosis.play_connections.filter(
-          (connection) =>
-            connection.focus_card_id === cardID
-            || connection.prerequisites.some(
-              (card) => card.stable_card_id === cardID,
-            ),
-        ),
-      ),
-      buildConnectionObligations(
-        diagnosis.connection_obligations.filter(
-          (obligation) =>
-            obligation.focus_card_id === cardID
-            || obligation.candidates.some(
-              (card) => card.stable_card_id === cardID,
-            ),
-        ),
-      ),
+      buildPlayConnections(connections),
+      buildConnectionObligations(obligations),
+      buildClassifications(diagnosis.classifications),
     );
     detail.append(alternative);
   }
@@ -1041,7 +988,9 @@ function buildDiagnosisAlternative(
 ): HTMLElement {
   const alternative = element("article", "hsm-debug-diagnosis-alternative");
   alternative.dataset["hsmDiagnosisLabel"] = diagnosis.label;
-  alternative.append(textElement("h3", `D${index + 1}`));
+  alternative.append(
+    textElement("h3", `D${index + 1} \u2014 ${diagnosis.label}`),
+  );
   return alternative;
 }
 
@@ -1096,60 +1045,42 @@ export function getHSMCardTooltipHTML(stableCardID: number): string {
   const clauses: string[] = [];
   for (const [index, diagnosis] of snapshot.diagnoses.entries()) {
     const parts: string[] = [];
-    const belief = diagnosis.card_beliefs.find(
-      (candidate) => candidate.stable_card_id === stableCardID,
+    const { belief, connections, obligations } = cardDiagnostics(
+      diagnosis,
+      stableCardID,
     );
     if (belief !== undefined) {
+      parts.push(cardBeliefText(belief));
+    }
+    for (const connection of connections) {
+      const prerequisites = connection.prerequisites
+        .map((card) => `#${card.stable_card_id} mask ${card.identity_mask}`)
+        .join(" \u2192 ");
       parts.push(
-        `candidate mask ${belief.candidate_identity_mask}`,
-        ...belief.reason_identity_masks.map(
-          (reason) => `${reason.reason}: mask ${reason.identity_mask}`,
-        ),
+        `Play Connection, ordered prerequisites: ${
+          prerequisites === "" ? "none" : prerequisites
+        }`,
       );
     }
-    for (const connection of diagnosis.play_connections) {
-      if (
-        connection.focus_card_id === stableCardID
-        || connection.prerequisites.some(
-          (card) => card.stable_card_id === stableCardID,
-        )
-      ) {
-        const prerequisites = connection.prerequisites
-          .map((card) => `#${card.stable_card_id} mask ${card.identity_mask}`)
-          .join(" \u2192 ");
-        parts.push(
-          `Play Connection, ordered prerequisites: ${
-            prerequisites === "" ? "none" : prerequisites
-          }`,
-        );
-      }
-    }
-    for (const obligation of diagnosis.connection_obligations) {
-      if (
-        obligation.focus_card_id === stableCardID
-        || obligation.candidates.some(
-          (card) => card.stable_card_id === stableCardID,
-        )
-      ) {
-        const candidates = obligation.candidates
-          .map((card, candidateIndex) => {
-            const current =
-              candidateIndex === obligation.current_candidate_index
-                ? " (current)"
-                : "";
-            return `#${card.stable_card_id} mask ${card.identity_mask}${current}`;
-          })
-          .join(" \u2192 ");
-        parts.push(
-          `${obligation.kind} obligation, ordered candidates: ${candidates}`,
-        );
-      }
+    for (const obligation of obligations) {
+      const candidates = obligation.candidates
+        .map((card, candidateIndex) => {
+          const current =
+            candidateIndex === obligation.current_candidate_index
+              ? " (current)"
+              : "";
+          return `#${card.stable_card_id} mask ${card.identity_mask}${current}`;
+        })
+        .join(" \u2192 ");
+      parts.push(
+        `${obligation.kind} obligation, ordered candidates: ${candidates}`,
+      );
     }
     if (parts.length > 0) {
       clauses.push(
-        `<span class="hsm-card-tooltip-clause"><strong>D${index + 1}:</strong> ${escapeHTML(
-          parts.join("; "),
-        )}.</span>`,
+        `<span class="hsm-card-tooltip-clause"><strong>D${index + 1}:</strong> <code>${escapeHTML(
+          diagnosis.label,
+        )}</code> ${escapeHTML(parts.join("; "))}.</span>`,
       );
     }
   }
@@ -1193,6 +1124,58 @@ function escapeHTML(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function cardDiagnostics(diagnosis: HSMDiagnosis, stableCardID: number) {
+  return {
+    belief: diagnosis.card_beliefs.find(
+      (candidate) => candidate.stable_card_id === stableCardID,
+    ),
+    connections: diagnosis.play_connections.filter(
+      (connection) =>
+        connection.focus_card_id === stableCardID
+        || connection.prerequisites.some(
+          (card) => card.stable_card_id === stableCardID,
+        ),
+    ),
+    obligations: diagnosis.connection_obligations.filter(
+      (obligation) =>
+        obligation.focus_card_id === stableCardID
+        || obligation.candidates.some(
+          (card) => card.stable_card_id === stableCardID,
+        ),
+    ),
+  };
+}
+
+function cardBeliefText(belief: HSMDiagnosis["card_beliefs"][number]): string {
+  const reasons =
+    belief.reason_identity_masks.length === 0
+      ? "no labelled reason"
+      : belief.reason_identity_masks
+          .map((reason) => `${reason.reason}: mask ${reason.identity_mask}`)
+          .join(" | ");
+  return `Candidate identity mask: ${belief.candidate_identity_mask} | ${reasons}`;
+}
+
+function buildCardBeliefs(beliefs: HSMDiagnosis["card_beliefs"]): HTMLElement {
+  const section = element("section", "hsm-debug-panel");
+  section.append(textElement("h3", "Card beliefs"));
+  if (beliefs.length === 0) {
+    section.append(textElement("p", "None at this boundary"));
+    return section;
+  }
+  const list = document.createElement("ul");
+  for (const belief of beliefs) {
+    list.append(
+      textElement(
+        "li",
+        `Stable Card ${belief.stable_card_id} | ${cardBeliefText(belief)}`,
+      ),
+    );
+  }
+  section.append(list);
+  return section;
 }
 
 function buildPlayConnections(

@@ -24,6 +24,11 @@ import { getHSMActionAnnotation } from "./hsmInspector";
 import { drawLayer } from "./konvaHelpers";
 import * as turn from "./turn";
 
+const STANDARD_CLUE_VALUE_COUNT = 5;
+// Hanabi.live orders colors red/yellow/green/blue/purple. Canonical HSM/JAXMARL order swaps the
+// last two colors.
+const HANABI_LIVE_TO_CANONICAL_COLOR = [0, 1, 2, 4, 3] as const;
+
 export function checkLegal(): void {
   clearHSMClueAnnotations();
   const clueTargetButtonGroup =
@@ -109,12 +114,12 @@ function renderHSMClueAnnotations(target: number, actor: number) {
   const { numPlayers } = globals.options;
   const handSize = numPlayers <= 3 ? 5 : 4;
   const relativeTarget = (target - actor - 1 + numPlayers) % numPlayers;
-  const clueBase = 2 * handSize + relativeTarget * 5;
   for (const clueButton of [
     ...globals.elements.colorClueButtons,
     ...globals.elements.rankClueButtons,
   ]) {
-    let actionID: number;
+    let clueValue: number;
+    let clueAxis: "color" | "rank";
     if (clueButton.clue.type === ClueType.Color) {
       const colorIndex = colorToColorIndex(
         clueButton.clue.value,
@@ -123,39 +128,46 @@ function renderHSMClueAnnotations(target: number, actor: number) {
       if (colorIndex === undefined) {
         continue;
       }
-      const actionOffset = hsmColorActionOffset(colorIndex);
-      if (actionOffset === undefined) {
+      const canonicalColor =
+        colorIndex < 0
+          ? undefined
+          : HANABI_LIVE_TO_CANONICAL_COLOR.at(colorIndex);
+      if (canonicalColor === undefined) {
         continue;
       }
-      actionID = clueBase + actionOffset;
+      clueAxis = "color";
+      clueValue = canonicalColor;
     } else {
-      const rankBase = 2 * handSize + (numPlayers - 1) * 5;
-      actionID = rankBase + relativeTarget * 5 + clueButton.clue.value - 1;
+      clueAxis = "rank";
+      clueValue = clueButton.clue.value - 1;
     }
+    const actionID = canonicalClueActionID(
+      clueAxis,
+      clueValue,
+      relativeTarget,
+      numPlayers,
+      handSize,
+    );
     applyHSMClueAnnotation(clueButton, getHSMActionAnnotation(actionID));
   }
 }
 
-function hsmColorActionOffset(colorIndex: number): number | undefined {
-  switch (colorIndex) {
-    case 0:
-    case 1:
-    case 2: {
-      return colorIndex;
-    }
-
-    case 3: {
-      return 4;
-    }
-
-    case 4: {
-      return 3;
-    }
-
-    default: {
-      return undefined;
-    }
-  }
+function canonicalClueActionID(
+  clueAxis: "color" | "rank",
+  clueValue: number,
+  relativeTarget: number,
+  numPlayers: number,
+  handSize: number,
+): number {
+  const cardActionCount = 2 * handSize;
+  const clueAxisOffset =
+    clueAxis === "rank" ? (numPlayers - 1) * STANDARD_CLUE_VALUE_COUNT : 0;
+  return (
+    cardActionCount
+    + clueAxisOffset
+    + relativeTarget * STANDARD_CLUE_VALUE_COUNT
+    + clueValue
+  );
 }
 
 function applyHSMClueAnnotation(

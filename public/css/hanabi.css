@@ -261,16 +261,6 @@ body.hsm-debug-authorized {
   color: #b9c4c8;
 }
 
-[data-hsm-action-id].hsm-board-action-follow {
-  outline: 3px solid #55c870;
-  outline-offset: 2px;
-}
-
-[data-hsm-action-id].hsm-board-action-violation {
-  outline: 3px dashed #ef625b;
-  outline-offset: 2px;
-}
-
 .hsm-debug-physical-truth-panel {
   border: 2px dashed #d09145;
   background: #3b2715;

@@ -1,9 +1,16 @@
 import { hsmTransportGolden } from "@hanabi-live/data";
+import { ClueType, getDefaultMetadata } from "@hanabi-live/game";
 import { afterEach, describe, expect, jest, test } from "@jest/globals";
 // eslint-disable-next-line import-x/no-relative-packages
 import goldenFixture from "../../../../../testdata/research-hsm/transport-v1.json";
+import { initialState } from "../reducers/initialStates/initialState";
+import { Elements } from "./Elements";
+import { RankButton } from "./RankButton";
+import { globals } from "./UIGlobals";
+import { checkLegal } from "./clues";
 import {
   destroyHSMInspector,
+  getHSMActionAnnotation,
   getHSMCardTooltipHTML,
   handleHSMSnapshot,
   handleHSMSnapshotFailure,
@@ -34,9 +41,8 @@ function noOpSend(_command: string, _data: Readonly<Record<string, unknown>>) {
 describe("native HSM inspector", () => {
   afterEach(() => {
     destroyHSMInspector();
-    for (const action of document.querySelectorAll("[data-hsm-action-id]")) {
-      action.remove();
-    }
+    globals.elements = new Elements();
+    globals.store = null;
   });
 
   test("renders only for an authorized viewer and keeps Historical as default", () => {
@@ -190,6 +196,10 @@ describe("native HSM inspector", () => {
     expect(actionDetail).toContain("HSM Semantic Evidence (explanation)");
     expect(actionDetail).toContain("D1");
     expect(actionDetail).toContain("D2");
+    expect(actionDetail).toContain(first.label);
+    expect(actionDetail).toContain(second.label);
+    expect(actionDetail).toContain("direct-clue: mask 1");
+    expect(actionDetail).toContain("finesse: mask 2");
 
     document
       .querySelector<HTMLButtonElement>("#hsm-debug-card-ledger-tab")
@@ -203,16 +213,11 @@ describe("native HSM inspector", () => {
     expect(cardDetail).toContain("finesse: mask 2");
     expect(cardDetail).toContain("ordered prerequisites: #8 mask 4");
     expect(cardDetail).toContain("ordered candidates: #9 mask 8 (current)");
+    expect(cardDetail).toContain("hierarchy-resolved");
     expect(document.querySelector("select[data-hsm-diagnosis]")).toBeNull();
   });
 
-  test("outlines only authority-legal actions with unanimous classifications", () => {
-    for (const actionID of [1, 2, 3, 4, 5, 6]) {
-      const square = document.createElement("button");
-      square.dataset["hsmActionId"] = String(actionID);
-      square.dataset["hsmAuthorityLegal"] = String(actionID !== 6);
-      document.body.append(square);
-    }
+  test("classifies only unanimous final action results for board annotations", () => {
     function classify(action_id: number, follow: boolean, violation: boolean) {
       return {
         action_id,
@@ -256,21 +261,70 @@ describe("native HSM inspector", () => {
       },
     });
 
-    expect(
-      document.querySelector('[data-hsm-action-id="1"]')?.className,
-    ).toContain("hsm-board-action-follow");
-    expect(
-      document.querySelector('[data-hsm-action-id="2"]')?.className,
-    ).toContain("hsm-board-action-violation");
-    for (const actionID of [3, 4, 5, 6]) {
-      const square = document.querySelector(
-        `[data-hsm-action-id="${actionID}"]`,
-      );
-      expect(square?.classList.contains("hsm-board-action-follow")).toBe(false);
-      expect(square?.classList.contains("hsm-board-action-violation")).toBe(
-        false,
-      );
+    expect(getHSMActionAnnotation(1)).toBe("follow");
+    expect(getHSMActionAnnotation(2)).toBe("violation");
+    for (const actionID of [3, 4, 5]) {
+      expect(getHSMActionAnnotation(actionID)).toBeNull();
     }
+  });
+
+  test("renders a unanimous classification on a real clue action square", () => {
+    const rankActionID = 15;
+    const diagnosis = {
+      ...goldenDiagnosis,
+      classifications: [
+        {
+          action_id: rankActionID,
+          classifier: "hierarchy-resolved" as const,
+          follow: true,
+          violation: false,
+        },
+      ],
+    };
+    initHSMInspector(debug, noOpSend as SendHSMCommand);
+    handleHSMSnapshotPending(golden.snapshotPending);
+    handleHSMSnapshot({
+      ...golden.snapshotMessage,
+      snapshot: {
+        ...golden.snapshotMessage.snapshot,
+        diagnoses: [diagnosis],
+      },
+    });
+
+    const metadata = getDefaultMetadata(2);
+    const gameState = initialState(metadata);
+    const visibleState = {
+      ...gameState.ongoingGame,
+      turn: {
+        ...gameState.ongoingGame.turn,
+        currentPlayerIndex: 0,
+      },
+    };
+    globals.store = {
+      getState: () => ({ ...gameState, visibleState }),
+    } as unknown as NonNullable<typeof globals.store>;
+    globals.elements.clueTargetButtonGroup = {
+      getPressed: () => ({ targetPlayerIndex: 1 }),
+    } as unknown as NonNullable<typeof globals.elements.clueTargetButtonGroup>;
+    globals.elements.clueTypeButtonGroup = {
+      getPressed: () => null,
+    } as unknown as NonNullable<typeof globals.elements.clueTypeButtonGroup>;
+    globals.elements.giveClueButton = {
+      setEnabled: jest.fn(),
+    } as unknown as NonNullable<typeof globals.elements.giveClueButton>;
+    const rankButton = new RankButton({
+      width: 20,
+      height: 20,
+      clue: { type: ClueType.Rank, value: 1 },
+      label: "1",
+    });
+    globals.elements.rankClueButtons = [rankButton];
+
+    checkLegal();
+
+    expect(rankButton.background.stroke()).toBe("#55c870");
+    expect(rankButton.background.strokeWidth()).toBe(3);
+    expect(rankButton.background.dash()).toEqual([]);
   });
 
   test("puts every diagnosis-labelled card clause and one Full details action in the tooltip", () => {
@@ -310,8 +364,10 @@ describe("native HSM inspector", () => {
 
     const tooltip = getHSMCardTooltipHTML(7);
     expect(tooltip).toContain("D1:");
+    expect(tooltip).toContain(first.label);
     expect(tooltip).toContain("direct-clue: mask 1");
     expect(tooltip).toContain("D2:");
+    expect(tooltip).toContain(second.label);
     expect(tooltip).toContain("save-principle: mask 2");
     expect(tooltip.match(/Full details/g)).toHaveLength(1);
     expect(tooltip).not.toContain("HSM");
