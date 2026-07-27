@@ -18,6 +18,7 @@ import {
   handleHSMSnapshotFailure,
   handleHSMSnapshotPending,
   initHSMInspector,
+  isHSMInspectionReadOnly,
   setHSMTargetBoundary,
 } from "./hsmInspector";
 import type { HSMDebugInit, SendHSMCommand } from "./hsmInspectorContract";
@@ -51,11 +52,11 @@ describe("native HSM inspector", () => {
     initHSMInspector(debug, noOpSend as SendHSMCommand);
 
     const toolbar = document.querySelector("#hsm-debug-toolbar");
-    expect(toolbar?.textContent).toContain("HSM Debug · purple");
+    expect(toolbar?.textContent).toContain("HSM Debug \u00B7 purple");
     expect(toolbar?.textContent).toContain("Perspective Alice");
     expect(toolbar?.textContent).toContain("Semantic profile pending");
     expect(toolbar?.textContent).toContain("Target action unavailable");
-    expect(toolbar?.textContent).toContain("evidence boundary 0");
+    expect(toolbar?.textContent).toContain("evidence Replay Boundary 0");
     expect(toolbar?.textContent).toContain("Historical viewpoint");
     expect(
       document.querySelector("#hsm-debug-toolbar strong")?.classList,
@@ -88,6 +89,14 @@ describe("native HSM inspector", () => {
     const evidence = document.querySelector<HTMLInputElement>(
       "#hsm-debug-evidence",
     )!;
+    expect(evidence.min).toBe("4");
+    expect(send).toHaveBeenLastCalledWith(
+      "researchHSMRequest",
+      expect.objectContaining({
+        targetBoundary: 3,
+        evidenceBoundary: 4,
+      }),
+    );
     evidence.value = "6";
     evidence.dispatchEvent(new Event("change", { bubbles: true }));
 
@@ -111,10 +120,13 @@ describe("native HSM inspector", () => {
         (command: string, data: Readonly<Record<string, unknown>>) => void
       >();
     initHSMInspector(debug, send as SendHSMCommand);
+    setHSMTargetBoundary(3, 4, 0);
+    expect(isHSMInspectionReadOnly()).toBe(true);
     setHSMTargetBoundary(4, 4, 0);
+    expect(isHSMInspectionReadOnly()).toBe(false);
     expect(
       document.querySelector("#hsm-debug-coordinate-summary")?.textContent,
-    ).toContain("Target action 4 \u00b7 pre-action boundary 3");
+    ).toContain("Target action 4 \u00B7 pre-action Replay Boundary 3");
 
     document
       .querySelector<HTMLButtonElement>("#hsm-debug-mode-hindsight")
@@ -128,15 +140,16 @@ describe("native HSM inspector", () => {
       document.querySelector<HTMLInputElement>("#hsm-debug-target")!;
     target.value = "1";
     target.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(isHSMInspectionReadOnly()).toBe(true);
 
     setHSMTargetBoundary(5, 5, 1);
 
     expect(
       document.querySelector("#hsm-debug-coordinate-summary")?.textContent,
-    ).toContain("Target action 2 \u00b7 pre-action boundary 1");
+    ).toContain("Target action 2 \u00B7 pre-action Replay Boundary 1");
     expect(
       document.querySelector("#hsm-debug-coordinate-summary")?.textContent,
-    ).toContain("Hindsight viewpoint \u00b7 evidence boundary 4");
+    ).toContain("Hindsight viewpoint \u00B7 evidence Replay Boundary 4");
     expect(send).toHaveBeenLastCalledWith(
       "researchHSMRequest",
       expect.objectContaining({
@@ -339,7 +352,9 @@ describe("native HSM inspector", () => {
     expect(detail).toContain("Current hindsight interpretation");
     expect(detail).toContain("Violation");
     expect(detail).toContain("Mistaken Action");
-    expect(detail).toContain("universally proven accepted transition 0");
+    expect(detail).toContain(
+      "universally proven accepted Canonical Transition 0",
+    );
   });
 
   test("classifies only unanimous final action results for board annotations", () => {

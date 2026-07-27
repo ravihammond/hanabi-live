@@ -57,8 +57,7 @@ interface InspectorState {
   actorPlayer: number;
   perspectivePlayer: number;
   followActor: boolean;
-  followLiveEdge: boolean;
-  targetPinned: boolean;
+  targetNavigation: "live-edge" | "visible-replay" | "pinned";
   historical: boolean;
   drawerOpen: boolean;
   nextClientRequestID: number;
@@ -129,8 +128,7 @@ export function initHSMInspector(
     actorPlayer: debug.ownPerspective,
     perspectivePlayer: debug.ownPerspective,
     followActor: debug.capability === "switchable",
-    followLiveEdge: true,
-    targetPinned: false,
+    targetNavigation: "live-edge",
     historical: true,
     drawerOpen: preferences?.drawerOpen ?? true,
     nextClientRequestID: 0,
@@ -202,7 +200,7 @@ export function isHSMInspectionReadOnly(): boolean {
   return (
     config.viewerKind === "spectator"
     || state.perspectivePlayer !== config.ownPerspective
-    || state.targetBoundary !== state.maxBoundary
+    || state.targetNavigation !== "live-edge"
   );
 }
 
@@ -217,17 +215,33 @@ export function setHSMTargetBoundary(
   }
   const nextMax = Math.max(0, maxBoundary);
   const atLiveEdge = targetBoundary >= nextMax;
-  const latestAcceptedTarget = Math.max(0, nextMax - 1);
-  const nextTarget = state.targetPinned
-    ? Math.min(state.targetBoundary, latestAcceptedTarget)
-    : atLiveEdge
-      ? latestAcceptedTarget
-      : Math.max(0, Math.min(targetBoundary, latestAcceptedTarget));
+  const latestAcceptedActionPreBoundary = Math.max(0, nextMax - 1);
+  let nextTarget = Math.max(
+    0,
+    Math.min(targetBoundary, latestAcceptedActionPreBoundary),
+  );
+  if (state.targetNavigation === "pinned") {
+    nextTarget = Math.min(
+      state.targetBoundary,
+      latestAcceptedActionPreBoundary,
+    );
+  } else if (atLiveEdge) {
+    nextTarget = latestAcceptedActionPreBoundary;
+  }
+  let nextTargetNavigation: InspectorState["targetNavigation"];
+  if (state.targetNavigation === "pinned") {
+    nextTargetNavigation = "pinned";
+  } else if (atLiveEdge) {
+    nextTargetNavigation = "live-edge";
+  } else {
+    nextTargetNavigation = "visible-replay";
+  }
   if (
     state.targetBoundary === nextTarget
     && state.maxBoundary === nextMax
     && state.actorPlayer === actorPlayer
     && state.gameFinished === gameFinished
+    && state.targetNavigation === nextTargetNavigation
   ) {
     return;
   }
@@ -235,18 +249,18 @@ export function setHSMTargetBoundary(
   state.maxBoundary = nextMax;
   state.gameFinished = gameFinished;
   state.actorPlayer = actorPlayer;
-  state.followLiveEdge = atLiveEdge && !state.targetPinned;
+  state.targetNavigation = nextTargetNavigation;
   if (state.followActor) {
     state.perspectivePlayer = actorPlayer;
   }
   if (state.historical) {
     state.evidenceBoundary = state.targetBoundary;
-  } else if (state.followLiveEdge) {
+  } else if (state.targetNavigation === "live-edge") {
     state.evidenceBoundary = state.maxBoundary;
   } else {
     state.evidenceBoundary = Math.min(
       state.maxBoundary,
-      Math.max(state.targetBoundary, state.evidenceBoundary),
+      Math.max(earliestHindsightEvidenceBoundary(), state.evidenceBoundary),
     );
   }
   state.snapshot = null;
@@ -575,7 +589,7 @@ export function getHSMActionAnnotation(actionID: number): HSMActionAnnotation {
 function buildToolbar(): HTMLElement {
   const toolbar = element("header", "hsm-debug-toolbar");
   toolbar.id = "hsm-debug-toolbar";
-  const label = textElement("strong", "\u25c6 HSM Debug \u00b7 purple");
+  const label = textElement("strong", "\u25C6 HSM Debug \u00B7 purple");
   label.className = "hsm-debug-label-purple";
   toolbar.append(
     label,
@@ -595,9 +609,9 @@ function buildCoordinateSummary(): HTMLElement {
     state?.snapshot?.semantic_profile_id ?? state?.semanticProfileID;
   const target =
     (state?.maxBoundary ?? 0) === 0
-      ? "Target action unavailable \u00b7 pre-action boundary 0"
+      ? "Target action unavailable \u00B7 pre-action Replay Boundary 0"
       : `Target action ${(state?.targetBoundary ?? 0) + 1}`
-        + ` \u00b7 pre-action boundary ${state?.targetBoundary ?? 0}`;
+        + ` \u00B7 pre-action Replay Boundary ${state?.targetBoundary ?? 0}`;
   const viewpoint =
     state?.historical === true ? "Historical viewpoint" : "Hindsight viewpoint";
   return textElement(
@@ -606,7 +620,7 @@ function buildCoordinateSummary(): HTMLElement {
       + ` | ${capabilityLabel()}`
       + ` | Semantic profile ${semanticProfile ?? "pending"}`
       + ` | ${target}`
-      + ` | ${viewpoint} \u00b7 evidence boundary ${state?.evidenceBoundary ?? 0}`,
+      + ` | ${viewpoint} \u00B7 evidence Replay Boundary ${state?.evidenceBoundary ?? 0}`,
     "hsm-debug-coordinate-summary",
   );
 }
@@ -704,9 +718,9 @@ function buildModeControl(): HTMLElement {
       return;
     }
     state.historical = false;
-    state.evidenceBoundary = Math.max(
-      state.targetBoundary,
-      state.evidenceBoundary,
+    state.evidenceBoundary = Math.min(
+      state.maxBoundary,
+      Math.max(earliestHindsightEvidenceBoundary(), state.evidenceBoundary),
     );
     renderAndRequest();
   });
@@ -774,12 +788,15 @@ function buildFailure(
   }
   const category = sentenceCase(typedFailure.category);
   const phase = sentenceCase(typedFailure.phase);
-  const explanation =
-    typedFailure.category === "observer_evidence_unsatisfiable"
-      ? "Observer-legal evidence could not produce a complete diagnostic result."
-      : typedFailure.category === "semantic_program_unsatisfiable"
-        ? "The semantic program could not produce a complete diagnostic result."
-        : "A structural diagnostic invariant prevented a complete result.";
+  let explanation =
+    "A structural diagnostic invariant prevented a complete result.";
+  if (typedFailure.category === "observer_evidence_unsatisfiable") {
+    explanation =
+      "Observer-legal evidence could not produce a complete diagnostic result.";
+  } else if (typedFailure.category === "semantic_program_unsatisfiable") {
+    explanation =
+      "The semantic program could not produce a complete diagnostic result.";
+  }
   failure.append(
     textElement("p", `${category} | ${phase}`),
     textElement("p", explanation),
@@ -817,7 +834,7 @@ function buildTimeline(): HTMLElement {
     target.min = "0";
     target.max = String(Math.max(0, (state?.maxBoundary ?? 0) - 1));
     target.value = String(state?.targetBoundary ?? 0);
-    target.setAttribute("aria-label", "Target accepted action");
+    target.setAttribute("aria-label", "Target accepted Canonical Transition");
     target.addEventListener("change", () => {
       if (state === null) {
         return;
@@ -826,13 +843,16 @@ function buildTimeline(): HTMLElement {
         0,
         Math.min(Number(target.value), state.maxBoundary - 1),
       );
-      state.targetPinned = state.targetBoundary < state.maxBoundary - 1;
-      state.followLiveEdge = !state.targetPinned;
+      state.targetNavigation =
+        state.targetBoundary < state.maxBoundary - 1 ? "pinned" : "live-edge";
       state.evidenceBoundary = state.historical
         ? state.targetBoundary
         : Math.min(
             state.maxBoundary,
-            Math.max(state.targetBoundary, state.evidenceBoundary),
+            Math.max(
+              earliestHindsightEvidenceBoundary(),
+              state.evidenceBoundary,
+            ),
           );
       renderAndRequest();
     });
@@ -841,10 +861,11 @@ function buildTimeline(): HTMLElement {
       target,
       textElement(
         "span",
-        `Pre-action Replay Boundary ${state?.targetBoundary ?? 0}`
-          + (state?.followLiveEdge === true
+        `Pre-action Replay Boundary ${state?.targetBoundary ?? 0}${
+          state?.targetNavigation === "live-edge"
             ? " | following live edge"
-            : " | rewound"),
+            : " | rewound"
+        }`,
       ),
     );
   }
@@ -852,24 +873,27 @@ function buildTimeline(): HTMLElement {
     wrapper.append(
       textElement(
         "span",
-        `\u25c0 Historical | evidence boundary ${state.targetBoundary}`,
+        `\u25C0 Historical | evidence Replay Boundary ${state.targetBoundary}`,
       ),
     );
   } else {
     const input = document.createElement("input");
     input.id = "hsm-debug-evidence";
     input.type = "range";
-    input.min = String(state?.targetBoundary ?? 0);
+    input.min = String(earliestHindsightEvidenceBoundary());
     input.max = String(state?.maxBoundary ?? 0);
     input.value = String(state?.evidenceBoundary ?? 0);
-    input.setAttribute("aria-label", "Later evidence accepted action");
+    input.setAttribute(
+      "aria-label",
+      "Later evidence accepted Canonical Transition",
+    );
     input.addEventListener("change", () => {
       if (state === null) {
         return;
       }
       state.evidenceBoundary = Math.min(
         state.maxBoundary,
-        Math.max(state.targetBoundary, Number(input.value)),
+        Math.max(earliestHindsightEvidenceBoundary(), Number(input.value)),
       );
       renderAndRequest();
     });
@@ -883,11 +907,18 @@ function buildTimeline(): HTMLElement {
       input,
       textElement(
         "span",
-        `\u25b6 Hindsight interval ${state?.targetBoundary ?? 0} -> ${state?.evidenceBoundary ?? 0}`,
+        `\u25B6 Hindsight interval ${state?.targetBoundary ?? 0} -> ${state?.evidenceBoundary ?? 0}`,
       ),
     );
   }
   return wrapper;
+}
+
+function earliestHindsightEvidenceBoundary(): number {
+  if (state === null) {
+    return 0;
+  }
+  return Math.min(state.maxBoundary, state.targetBoundary + 1);
 }
 
 function buildReadOnlyNotice(): HTMLElement {
@@ -1084,7 +1115,7 @@ function buildActionLedgerDetail(
     labelledValue(
       "Used at action time",
       actionTime === null
-        ? "Unavailable for this accepted action."
+        ? "Unavailable for this accepted Canonical Transition."
         : classificationText(
             actionTime.final_follow,
             actionTime.final_violation,
@@ -1100,8 +1131,8 @@ function buildActionLedgerDetail(
   if (mistaken !== undefined) {
     detail.append(
       labelledValue(
-        "\u26a0 Mistaken Action",
-        `universally proven accepted transition ${mistaken.transition_index}`
+        "\u26A0 Mistaken Action",
+        `universally proven accepted Canonical Transition ${mistaken.transition_index}`
           + ` | actor ${mistaken.historical_actor + 1}`
           + ` | classifiers ${mistaken.violating_classifiers.join(", ")}`,
         undefined,
@@ -1136,12 +1167,12 @@ function buildActionLedgerDetail(
 
 function classificationText(follow: boolean, violation: boolean): string {
   if (follow && !violation) {
-    return "\u25cf Follow";
+    return "\u25CF Follow";
   }
   if (violation && !follow) {
-    return "\u25b2 Violation";
+    return "\u25B2 Violation";
   }
-  return "\u25c7 Neither Follow nor Violation";
+  return "\u25C7 Neither Follow nor Violation";
 }
 
 function buildCardLedgerDetail(
