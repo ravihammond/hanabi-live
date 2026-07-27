@@ -3,6 +3,7 @@ import type {
   HSMConnectionObligation,
   HSMDebugInit,
   HSMDiagnosis,
+  HSMFailure,
   HSMPhysicalTruthFailureMessage,
   HSMPhysicalTruthMessage,
   HSMPhysicalTruthOverlay,
@@ -56,6 +57,8 @@ interface InspectorState {
   actorPlayer: number;
   perspectivePlayer: number;
   followActor: boolean;
+  followLiveEdge: boolean;
+  targetPinned: boolean;
   historical: boolean;
   drawerOpen: boolean;
   nextClientRequestID: number;
@@ -65,12 +68,14 @@ interface InspectorState {
   pendingPhysicalTruth: PendingHSMPhysicalTruth | null;
   physicalTruthOverlay: HSMPhysicalTruthOverlay | null;
   physicalTruthFailure: string | null;
+  semanticProfileID: number | null;
   selectedLedger: "action" | "card";
   selectedCardID: number | null;
   selectedActionID: number | null;
   snapshot: HSMSnapshot | null;
   loading: boolean;
   failure: string | null;
+  typedFailure: HSMFailure | null;
 }
 
 interface InspectorPreferences {
@@ -124,6 +129,8 @@ export function initHSMInspector(
     actorPlayer: debug.ownPerspective,
     perspectivePlayer: debug.ownPerspective,
     followActor: debug.capability === "switchable",
+    followLiveEdge: true,
+    targetPinned: false,
     historical: true,
     drawerOpen: preferences?.drawerOpen ?? true,
     nextClientRequestID: 0,
@@ -133,12 +140,14 @@ export function initHSMInspector(
     pendingPhysicalTruth: null,
     physicalTruthOverlay: null,
     physicalTruthFailure: null,
+    semanticProfileID: null,
     selectedLedger: "action",
     selectedCardID: null,
     selectedActionID: null,
     snapshot: null,
     loading: true,
     failure: null,
+    typedFailure: null,
   };
   root = document.createElement("div");
   root.id = "hsm-debug-root";
@@ -183,7 +192,7 @@ export function getHSMToolbarReservedHeight(): number {
   if (root === null) {
     return 0;
   }
-  return window.innerWidth <= 760 ? 140 : 43;
+  return window.innerWidth <= 760 ? 190 : 60;
 }
 
 export function isHSMInspectionReadOnly(): boolean {
@@ -206,8 +215,14 @@ export function setHSMTargetBoundary(
   if (state === null || config === null) {
     return;
   }
-  const nextTarget = Math.max(0, Math.min(targetBoundary, maxBoundary));
   const nextMax = Math.max(0, maxBoundary);
+  const atLiveEdge = targetBoundary >= nextMax;
+  const latestAcceptedTarget = Math.max(0, nextMax - 1);
+  const nextTarget = state.targetPinned
+    ? Math.min(state.targetBoundary, latestAcceptedTarget)
+    : atLiveEdge
+      ? latestAcceptedTarget
+      : Math.max(0, Math.min(targetBoundary, latestAcceptedTarget));
   if (
     state.targetBoundary === nextTarget
     && state.maxBoundary === nextMax
@@ -220,12 +235,20 @@ export function setHSMTargetBoundary(
   state.maxBoundary = nextMax;
   state.gameFinished = gameFinished;
   state.actorPlayer = actorPlayer;
+  state.followLiveEdge = atLiveEdge && !state.targetPinned;
   if (state.followActor) {
     state.perspectivePlayer = actorPlayer;
   }
-  state.evidenceBoundary = state.historical
-    ? state.targetBoundary
-    : Math.max(state.targetBoundary, state.evidenceBoundary);
+  if (state.historical) {
+    state.evidenceBoundary = state.targetBoundary;
+  } else if (state.followLiveEdge) {
+    state.evidenceBoundary = state.maxBoundary;
+  } else {
+    state.evidenceBoundary = Math.min(
+      state.maxBoundary,
+      Math.max(state.targetBoundary, state.evidenceBoundary),
+    );
+  }
   state.snapshot = null;
   state.pendingPhysicalTruth = null;
   requestTimeouts.clearPhysicalTruth();
@@ -235,6 +258,7 @@ export function setHSMTargetBoundary(
   state.selectedActionID = null;
   state.loading = true;
   state.failure = null;
+  state.typedFailure = null;
   render();
   requestSnapshot();
   requestPhysicalTruth();
@@ -253,6 +277,20 @@ export function handleHSMSnapshotPending(
   const bound = bindPendingSnapshot(message, pending);
   if (bound !== null) {
     state.pendingSnapshot = bound;
+    state.semanticProfileID = message.semanticProfileID;
+    if (message.actorPlayer >= 0) {
+      state.actorPlayer = message.actorPlayer;
+      if (
+        state.followActor
+        && state.perspectivePlayer !== message.actorPlayer
+      ) {
+        state.perspectivePlayer = message.actorPlayer;
+        state.physicalTruth = false;
+        renderAndRequest();
+        return;
+      }
+    }
+    render();
   }
 }
 
@@ -269,6 +307,7 @@ export function handleHSMSnapshot(message: HSMSnapshotMessage): void {
   state.selectedActionID = null;
   state.loading = false;
   state.failure = null;
+  state.typedFailure = null;
   requestTimeouts.clearSnapshot();
   render();
 }
@@ -287,6 +326,7 @@ export function handleHSMSnapshotFailure(
   state.pendingSnapshot = null;
   state.loading = false;
   state.failure = message.error;
+  state.typedFailure = message.failure;
   requestTimeouts.clearSnapshot();
   render();
 }
@@ -306,6 +346,7 @@ export function handleHSMSnapshotUnavailable(
   state.selectedActionID = null;
   state.loading = false;
   state.failure = message.error;
+  state.typedFailure = null;
   requestTimeouts.clearSnapshot();
   render();
 }
@@ -324,6 +365,7 @@ export function handleHSMSnapshotRejected(
   state.pendingSnapshot = null;
   state.loading = false;
   state.failure = `Snapshot request rejected: ${message.reasonCode}`;
+  state.typedFailure = null;
   requestTimeouts.clearSnapshot();
   render();
 }
@@ -404,6 +446,7 @@ function requestSnapshot() {
   state.loading = true;
   state.snapshot = null;
   state.failure = null;
+  state.typedFailure = null;
   state.nextClientRequestID++;
   state.pendingSnapshot = {
     serverRequestID: null,
@@ -412,7 +455,7 @@ function requestSnapshot() {
     targetBoundary: state.targetBoundary,
     evidenceBoundary: state.evidenceBoundary,
     perspectivePlayer: state.perspectivePlayer,
-    actorPlayer: state.actorPlayer,
+    actorPlayer: null,
     semanticProfileID: null,
     authorityLegalProjectionDigest: null,
   };
@@ -433,6 +476,7 @@ function requestSnapshot() {
     state.pendingSnapshot = null;
     state.loading = false;
     state.failure = "Diagnostic Snapshot request timed out.";
+    state.typedFailure = null;
     render();
   });
 }
@@ -531,16 +575,40 @@ export function getHSMActionAnnotation(actionID: number): HSMActionAnnotation {
 function buildToolbar(): HTMLElement {
   const toolbar = element("header", "hsm-debug-toolbar");
   toolbar.id = "hsm-debug-toolbar";
-  const label = textElement("strong", "HSM Debug");
+  const label = textElement("strong", "\u25c6 HSM Debug \u00b7 purple");
   label.className = "hsm-debug-label-purple";
   toolbar.append(
     label,
-    textElement("span", capabilityLabel()),
+    buildCoordinateSummary(),
     labelledControl("Perspective", buildPerspectiveSelect()),
     buildTruthControl(),
     buildModeControl(),
   );
   return toolbar;
+}
+
+function buildCoordinateSummary(): HTMLElement {
+  const perspective = state?.perspectivePlayer ?? 0;
+  const perspectiveName =
+    config?.playerNames[perspective] ?? `Player ${perspective + 1}`;
+  const semanticProfile =
+    state?.snapshot?.semantic_profile_id ?? state?.semanticProfileID;
+  const target =
+    (state?.maxBoundary ?? 0) === 0
+      ? "Target action unavailable \u00b7 pre-action boundary 0"
+      : `Target action ${(state?.targetBoundary ?? 0) + 1}`
+        + ` \u00b7 pre-action boundary ${state?.targetBoundary ?? 0}`;
+  const viewpoint =
+    state?.historical === true ? "Historical viewpoint" : "Hindsight viewpoint";
+  return textElement(
+    "span",
+    `Perspective ${perspectiveName}`
+      + ` | ${capabilityLabel()}`
+      + ` | Semantic profile ${semanticProfile ?? "pending"}`
+      + ` | ${target}`
+      + ` | ${viewpoint} \u00b7 evidence boundary ${state?.evidenceBoundary ?? 0}`,
+    "hsm-debug-coordinate-summary",
+  );
 }
 
 function capabilityLabel(): string {
@@ -659,7 +727,7 @@ function buildDrawer(): HTMLElement {
   drawer.append(heading, buildTimeline(), buildReadOnlyNotice());
   const snapshot = state?.snapshot ?? null;
   if (state?.failure !== null && state?.failure !== undefined) {
-    const failure = textElement("div", state.failure, "hsm-debug-failure");
+    const failure = buildFailure(state.failure, state.typedFailure);
     failure.setAttribute("role", "alert");
     drawer.append(failure);
   } else if (state?.loading === true || snapshot === null) {
@@ -694,6 +762,36 @@ function buildDrawer(): HTMLElement {
   return drawer;
 }
 
+function buildFailure(
+  message: string,
+  typedFailure: HSMFailure | null,
+): HTMLElement {
+  const failure = element("div", "hsm-debug-failure");
+  failure.id = "hsm-debug-failure";
+  failure.append(textElement("strong", message));
+  if (typedFailure === null) {
+    return failure;
+  }
+  const category = sentenceCase(typedFailure.category);
+  const phase = sentenceCase(typedFailure.phase);
+  const explanation =
+    typedFailure.category === "observer_evidence_unsatisfiable"
+      ? "Observer-legal evidence could not produce a complete diagnostic result."
+      : typedFailure.category === "semantic_program_unsatisfiable"
+        ? "The semantic program could not produce a complete diagnostic result."
+        : "A structural diagnostic invariant prevented a complete result.";
+  failure.append(
+    textElement("p", `${category} | ${phase}`),
+    textElement("p", explanation),
+  );
+  return failure;
+}
+
+function sentenceCase(value: string): string {
+  const spaced = value.replaceAll("_", " ");
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
 function buildPhysicalTruthOverlay(
   overlay: HSMPhysicalTruthOverlay,
 ): HTMLElement {
@@ -710,9 +808,53 @@ function buildPhysicalTruthOverlay(
 function buildTimeline(): HTMLElement {
   const wrapper = element("section", "hsm-debug-timeline");
   wrapper.id = "hsm-debug-timeline";
-  wrapper.append(textElement("strong", `Target ${state?.targetBoundary ?? 0}`));
+  if ((state?.maxBoundary ?? 0) === 0) {
+    wrapper.append(textElement("strong", "No accepted target action"));
+  } else {
+    const target = document.createElement("input");
+    target.id = "hsm-debug-target";
+    target.type = "range";
+    target.min = "0";
+    target.max = String(Math.max(0, (state?.maxBoundary ?? 0) - 1));
+    target.value = String(state?.targetBoundary ?? 0);
+    target.setAttribute("aria-label", "Target accepted action");
+    target.addEventListener("change", () => {
+      if (state === null) {
+        return;
+      }
+      state.targetBoundary = Math.max(
+        0,
+        Math.min(Number(target.value), state.maxBoundary - 1),
+      );
+      state.targetPinned = state.targetBoundary < state.maxBoundary - 1;
+      state.followLiveEdge = !state.targetPinned;
+      state.evidenceBoundary = state.historical
+        ? state.targetBoundary
+        : Math.min(
+            state.maxBoundary,
+            Math.max(state.targetBoundary, state.evidenceBoundary),
+          );
+      renderAndRequest();
+    });
+    wrapper.append(
+      textElement("strong", `Target action ${state!.targetBoundary + 1}`),
+      target,
+      textElement(
+        "span",
+        `Pre-action Replay Boundary ${state?.targetBoundary ?? 0}`
+          + (state?.followLiveEdge === true
+            ? " | following live edge"
+            : " | rewound"),
+      ),
+    );
+  }
   if (state?.historical === true) {
-    wrapper.append(textElement("span", "Historical | evidence equals target"));
+    wrapper.append(
+      textElement(
+        "span",
+        `\u25c0 Historical | evidence boundary ${state.targetBoundary}`,
+      ),
+    );
   } else {
     const input = document.createElement("input");
     input.id = "hsm-debug-evidence";
@@ -720,22 +862,28 @@ function buildTimeline(): HTMLElement {
     input.min = String(state?.targetBoundary ?? 0);
     input.max = String(state?.maxBoundary ?? 0);
     input.value = String(state?.evidenceBoundary ?? 0);
+    input.setAttribute("aria-label", "Later evidence accepted action");
     input.addEventListener("change", () => {
       if (state === null) {
         return;
       }
-      state.evidenceBoundary = Math.max(
-        state.targetBoundary,
-        Number(input.value),
+      state.evidenceBoundary = Math.min(
+        state.maxBoundary,
+        Math.max(state.targetBoundary, Number(input.value)),
       );
       renderAndRequest();
     });
     wrapper.append(
-      textElement("span", `Evidence ${state?.evidenceBoundary ?? 0}`),
+      textElement(
+        "span",
+        `Evidence ${state?.evidenceBoundary ?? 0}`
+          + ` | evidence action ${state?.evidenceBoundary ?? 0}`
+          + ` | post-action Replay Boundary ${state?.evidenceBoundary ?? 0}`,
+      ),
       input,
       textElement(
         "span",
-        `Hindsight interval ${state?.targetBoundary ?? 0} -> ${state?.evidenceBoundary ?? 0}`,
+        `\u25b6 Hindsight interval ${state?.targetBoundary ?? 0} -> ${state?.evidenceBoundary ?? 0}`,
       ),
     );
   }
@@ -924,10 +1072,43 @@ function buildActionLedgerDetail(
   } else if (violationCount > 0) {
     summary = `Violation possible \u2014 ${violationCount} of ${total} diagnoses`;
   }
+  const actionTime =
+    snapshot.action_time_classification?.selected_action_id === actionID
+      ? snapshot.action_time_classification
+      : null;
+  const mistaken = snapshot.mistaken_actions.find(
+    (candidate) => candidate.action_id === actionID,
+  );
   detail.append(
     textElement("h2", `Action ${actionID}`),
-    textElement("p", summary),
+    labelledValue(
+      "Used at action time",
+      actionTime === null
+        ? "Unavailable for this accepted action."
+        : classificationText(
+            actionTime.final_follow,
+            actionTime.final_violation,
+          ),
+    ),
+    labelledValue(
+      snapshot.evidence_boundary > snapshot.target_boundary
+        ? "Current hindsight interpretation"
+        : "Current historical interpretation",
+      summary,
+    ),
   );
+  if (mistaken !== undefined) {
+    detail.append(
+      labelledValue(
+        "\u26a0 Mistaken Action",
+        `universally proven accepted transition ${mistaken.transition_index}`
+          + ` | actor ${mistaken.historical_actor + 1}`
+          + ` | classifiers ${mistaken.violating_classifiers.join(", ")}`,
+        undefined,
+        "hsm-debug-mistaken-action",
+      ),
+    );
+  }
   for (const [index, diagnosis] of snapshot.diagnoses.entries()) {
     const alternative = buildDiagnosisAlternative(diagnosis, index);
     const rows = diagnosis.classifications.filter(
@@ -951,6 +1132,16 @@ function buildActionLedgerDetail(
     detail.append(alternative);
   }
   return detail;
+}
+
+function classificationText(follow: boolean, violation: boolean): string {
+  if (follow && !violation) {
+    return "\u25cf Follow";
+  }
+  if (violation && !follow) {
+    return "\u25b2 Violation";
+  }
+  return "\u25c7 Neither Follow nor Violation";
 }
 
 function buildCardLedgerDetail(
@@ -1369,14 +1560,14 @@ function renderAndRequest() {
   state.snapshot = null;
   state.loading = true;
   state.failure = null;
-  if (!state.physicalTruth) {
-    state.pendingPhysicalTruth = null;
-    requestTimeouts.clearPhysicalTruth();
-    state.physicalTruthOverlay = null;
-    state.physicalTruthFailure = null;
-  }
+  state.typedFailure = null;
+  state.pendingPhysicalTruth = null;
+  requestTimeouts.clearPhysicalTruth();
+  state.physicalTruthOverlay = null;
+  state.physicalTruthFailure = null;
   render();
   requestSnapshot();
+  requestPhysicalTruth();
 }
 
 function element<K extends keyof HTMLElementTagNameMap>(

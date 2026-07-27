@@ -12,6 +12,8 @@ import {
   destroyHSMInspector,
   getHSMActionAnnotation,
   getHSMCardTooltipHTML,
+  handleHSMPhysicalTruth,
+  handleHSMPhysicalTruthPending,
   handleHSMSnapshot,
   handleHSMSnapshotFailure,
   handleHSMSnapshotPending,
@@ -48,7 +50,13 @@ describe("native HSM inspector", () => {
   test("renders only for an authorized viewer and keeps Historical as default", () => {
     initHSMInspector(debug, noOpSend as SendHSMCommand);
 
-    expect(document.querySelector("#hsm-debug-toolbar")).not.toBeNull();
+    const toolbar = document.querySelector("#hsm-debug-toolbar");
+    expect(toolbar?.textContent).toContain("HSM Debug · purple");
+    expect(toolbar?.textContent).toContain("Perspective Alice");
+    expect(toolbar?.textContent).toContain("Semantic profile pending");
+    expect(toolbar?.textContent).toContain("Target action unavailable");
+    expect(toolbar?.textContent).toContain("evidence boundary 0");
+    expect(toolbar?.textContent).toContain("Historical viewpoint");
     expect(
       document.querySelector("#hsm-debug-toolbar strong")?.classList,
     ).toContain("hsm-debug-label-purple");
@@ -95,6 +103,79 @@ describe("native HSM inspector", () => {
         evidenceBoundary: 6,
       }),
     );
+  });
+
+  test("follows the live edge until an explicit rewind freezes the target", () => {
+    const send =
+      jest.fn<
+        (command: string, data: Readonly<Record<string, unknown>>) => void
+      >();
+    initHSMInspector(debug, send as SendHSMCommand);
+    setHSMTargetBoundary(4, 4, 0);
+    expect(
+      document.querySelector("#hsm-debug-coordinate-summary")?.textContent,
+    ).toContain("Target action 4 \u00b7 pre-action boundary 3");
+
+    document
+      .querySelector<HTMLButtonElement>("#hsm-debug-mode-hindsight")
+      ?.click();
+    const evidence = document.querySelector<HTMLInputElement>(
+      "#hsm-debug-evidence",
+    )!;
+    evidence.value = "4";
+    evidence.dispatchEvent(new Event("change", { bubbles: true }));
+    const target =
+      document.querySelector<HTMLInputElement>("#hsm-debug-target")!;
+    target.value = "1";
+    target.dispatchEvent(new Event("change", { bubbles: true }));
+
+    setHSMTargetBoundary(5, 5, 1);
+
+    expect(
+      document.querySelector("#hsm-debug-coordinate-summary")?.textContent,
+    ).toContain("Target action 2 \u00b7 pre-action boundary 1");
+    expect(
+      document.querySelector("#hsm-debug-coordinate-summary")?.textContent,
+    ).toContain("Hindsight viewpoint \u00b7 evidence boundary 4");
+    expect(send).toHaveBeenLastCalledWith(
+      "researchHSMRequest",
+      expect.objectContaining({
+        targetBoundary: 1,
+        evidenceBoundary: 4,
+      }),
+    );
+  });
+
+  test("follows the server-bound historical actor without granting action authority", () => {
+    const send =
+      jest.fn<
+        (command: string, data: Readonly<Record<string, unknown>>) => void
+      >();
+    initHSMInspector(debug, send as SendHSMCommand);
+    setHSMTargetBoundary(4, 4, 1);
+    handleHSMSnapshotPending({
+      ...golden.snapshotPending,
+      clientRequestID: 2,
+      targetBoundary: 3,
+      evidenceBoundary: 3,
+      perspectivePlayer: 1,
+      actorPlayer: 0,
+    });
+
+    expect(send).toHaveBeenLastCalledWith(
+      "researchHSMRequest",
+      expect.objectContaining({
+        clientRequestID: 3,
+        targetBoundary: 3,
+        perspectivePlayer: 0,
+      }),
+    );
+    expect(
+      document.querySelector("#hsm-debug-coordinate-summary")?.textContent,
+    ).toContain("Perspective Alice");
+    expect(
+      document.querySelector("#hsm-debug-read-only")?.textContent,
+    ).toContain("diagnostic indicators do not change legal actions");
   });
 
   test("renders selectable Action and Card Ledgers with correlated diagnosis detail", () => {
@@ -215,6 +296,50 @@ describe("native HSM inspector", () => {
     expect(cardDetail).toContain("ordered candidates: #9 mask 8 (current)");
     expect(cardDetail).toContain("hierarchy-resolved");
     expect(document.querySelector("select[data-hsm-diagnosis]")).toBeNull();
+  });
+
+  test("keeps action-time use separate from hindsight reinterpretation", () => {
+    const hindsightViolation = {
+      ...goldenDiagnosis,
+      classifications: [
+        {
+          action_id: 3,
+          classifier: "hierarchy-resolved" as const,
+          follow: false,
+          violation: true,
+        },
+      ],
+    };
+    initHSMInspector(debug, noOpSend as SendHSMCommand);
+    handleHSMSnapshotPending(golden.snapshotPending);
+    handleHSMSnapshot({
+      ...golden.snapshotMessage,
+      snapshot: {
+        ...golden.snapshotMessage.snapshot,
+        evidence_boundary: 1,
+        diagnoses: [hindsightViolation],
+        mistaken_actions: [
+          {
+            transition_index: 0,
+            historical_actor: 0,
+            action_id: 3,
+            violating_classifiers: ["hierarchy-resolved" as const],
+          },
+        ],
+      },
+    });
+    document
+      .querySelector<HTMLButtonElement>("[data-hsm-ledger-action='3']")
+      ?.click();
+
+    const detail =
+      document.querySelector("#hsm-debug-ledger-detail")?.textContent ?? "";
+    expect(detail).toContain("Used at action time");
+    expect(detail).toContain("Follow");
+    expect(detail).toContain("Current hindsight interpretation");
+    expect(detail).toContain("Violation");
+    expect(detail).toContain("Mistaken Action");
+    expect(detail).toContain("universally proven accepted transition 0");
   });
 
   test("classifies only unanimous final action results for board annotations", () => {
@@ -434,9 +559,17 @@ describe("native HSM inspector", () => {
     handleHSMSnapshotFailure(golden.snapshotFailure);
 
     expect(document.querySelector("#hsm-debug-loading")).toBeNull();
-    expect(document.querySelector("#hsm-debug-failure")?.textContent).toBe(
-      golden.snapshotFailure.error,
+    const failure =
+      document.querySelector("#hsm-debug-failure")?.textContent ?? "";
+    expect(failure).toContain("HSM diagnostics unavailable");
+    expect(failure).toContain("Semantic program unsatisfiable");
+    expect(failure).toContain("Exact solving");
+    expect(failure).toContain(
+      "The semantic program could not produce a complete diagnostic result.",
     );
+    expect(failure).not.toContain("identity");
+    expect(getHSMActionAnnotation(3)).toBeNull();
+    expect(getHSMCardTooltipHTML(7)).toBe("");
   });
 
   test("preserves presentation preferences only within the same run", () => {
@@ -469,5 +602,49 @@ describe("native HSM inspector", () => {
       document.querySelector<HTMLInputElement>("#hsm-debug-physical-truth")
         ?.disabled,
     ).toBe(false);
+  });
+
+  test("keeps Physical Truth display-only and clears it across coordinates", () => {
+    const send =
+      jest.fn<
+        (command: string, data: Readonly<Record<string, unknown>>) => void
+      >();
+    initHSMInspector(
+      { ...debug, physicalTruthGranted: true },
+      send as SendHSMCommand,
+    );
+    handleHSMSnapshotPending(golden.snapshotPending);
+    handleHSMSnapshot(golden.snapshotMessage);
+    expect(getHSMActionAnnotation(3)).toBe("follow");
+
+    document
+      .querySelector<HTMLInputElement>("#hsm-debug-physical-truth")!
+      .click();
+    handleHSMPhysicalTruthPending(golden.physicalTruthPending);
+    handleHSMPhysicalTruth(golden.physicalTruthMessage);
+
+    expect(
+      document.querySelector(".hsm-debug-physical-truth-panel"),
+    ).not.toBeNull();
+    expect(getHSMActionAnnotation(3)).toBe("follow");
+    const semanticRequestsBefore = send.mock.calls.filter(
+      ([command]) => command === "researchHSMRequest",
+    );
+    expect(semanticRequestsBefore.at(-1)?.[1]).not.toHaveProperty(
+      "physicalTruth",
+    );
+
+    document
+      .querySelector<HTMLButtonElement>("#hsm-debug-mode-hindsight")
+      ?.click();
+
+    expect(
+      document.querySelector(".hsm-debug-physical-truth-panel"),
+    ).toBeNull();
+    expect(
+      send.mock.calls.filter(
+        ([command]) => command === "researchHSMPhysicalTruthRequest",
+      ),
+    ).toHaveLength(2);
   });
 });

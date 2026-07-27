@@ -228,6 +228,7 @@ export const hsmSnapshot = z
     semantic_profile_id: positiveInteger,
     aggregate_action_classifications: hsmClassification.array().readonly(),
     mistaken_actions: hsmMistakenAction.array().readonly(),
+    action_time_classification: hsmActionTimeClassification.nullable(),
     diagnoses: hsmDiagnosis.array().min(1).readonly(),
     consensus: hsmDiagnosticProjection,
   })

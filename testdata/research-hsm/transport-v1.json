@@ -78,6 +78,22 @@
           }
         ],
         "semantic_values": []
+      },
+      "action_time_classification": {
+        "generation_id": 7,
+        "target_boundary": 0,
+        "evidence_boundary": 0,
+        "perspective_player": 0,
+        "semantic_profile_id": 3,
+        "selected_action_id": 3,
+        "final_follow": true,
+        "final_violation": false,
+        "rule_follow": [
+          true
+        ],
+        "rule_violation": [
+          false
+        ]
       }
     }
   },

@@ -201,8 +201,11 @@ describe("HSM transport correlation", () => {
     initHSMInspector(participantDebug, noOpSend as SendHSMCommand);
     gameCommands.get("hsmSnapshotPending")!(golden.snapshotPending);
     gameCommands.get("hsmSnapshotFailure")!(golden.snapshotFailure);
-    expect(document.querySelector("#hsm-debug-failure")?.textContent).toBe(
+    expect(document.querySelector("#hsm-debug-failure")?.textContent).toContain(
       golden.snapshotFailure.error,
+    );
+    expect(document.querySelector("#hsm-debug-failure")?.textContent).toContain(
+      "Semantic program unsatisfiable",
     );
   });
 
