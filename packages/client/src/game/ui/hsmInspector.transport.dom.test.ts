@@ -16,6 +16,7 @@ import {
   handleHSMSnapshotPending,
   handleHSMSnapshotRejected,
   initHSMInspector,
+  setHSMTargetBoundary,
 } from "./hsmInspector";
 import type { HSMDebugInit, SendHSMCommand } from "./hsmInspectorContract";
 import { HSM_REQUEST_TIMEOUT_MS } from "./hsmInspectorCorrelation";
@@ -43,15 +44,28 @@ function noOpSend(_command: string, _data: Readonly<Record<string, unknown>>) {
   // This test injects websocket messages through the normal command handlers.
 }
 
+function initAtAuthoritativeBoundary(
+  debug: HSMDebugInit,
+  send: SendHSMCommand,
+  actorPlayer = 0,
+): void {
+  initHSMInspector(debug, send);
+  setHSMTargetBoundary(0, 0, actorPlayer);
+}
+
 describe("HSM transport correlation", () => {
   afterEach(() => {
     destroyHSMInspector();
     jest.useRealTimers();
   });
 
-  test("negotiates protocol v1 and sends it on every client request", () => {
+  test("waits for the authoritative actor before sending the initial snapshot request", () => {
     const send = sendRecorder();
     initHSMInspector(participantDebug, send as SendHSMCommand);
+
+    expect(send).not.toHaveBeenCalled();
+
+    setHSMTargetBoundary(0, 0, 1);
 
     expect(send).toHaveBeenCalledWith("researchHSMRequest", {
       tableID: 42,
@@ -60,7 +74,7 @@ describe("HSM transport correlation", () => {
       clientRequestID: 1,
       targetBoundary: 0,
       evidenceBoundary: 0,
-      perspectivePlayer: 0,
+      perspectivePlayer: 1,
     });
 
     destroyHSMInspector();
@@ -131,7 +145,7 @@ describe("HSM transport correlation", () => {
   });
 
   test("accepts only the server-bound profile, digest, and exact coordinates", () => {
-    initHSMInspector(participantDebug, noOpSend as SendHSMCommand);
+    initAtAuthoritativeBoundary(participantDebug, noOpSend as SendHSMCommand);
     handleHSMSnapshotPending(golden.snapshotPending);
 
     handleHSMSnapshot({
@@ -149,7 +163,7 @@ describe("HSM transport correlation", () => {
 
   test("a replacement generation clears prior output and ignores stale responses", () => {
     const send = sendRecorder();
-    initHSMInspector(participantDebug, send as SendHSMCommand);
+    initAtAuthoritativeBoundary(participantDebug, send as SendHSMCommand);
     handleHSMSnapshotPending(golden.snapshotPending);
     handleHSMSnapshot(golden.snapshotMessage);
     expect(document.querySelector("#hsm-debug-current")).not.toBeNull();
@@ -161,6 +175,7 @@ describe("HSM transport correlation", () => {
       },
       send as SendHSMCommand,
     );
+    setHSMTargetBoundary(0, 0, 0);
 
     expect(document.querySelector("#hsm-debug-current")).toBeNull();
     expect(document.querySelector("#hsm-debug-loading")).not.toBeNull();
@@ -178,7 +193,7 @@ describe("HSM transport correlation", () => {
   });
 
   test("normal websocket dispatch renders the rich canonical success and failure", () => {
-    initHSMInspector(participantDebug, noOpSend as SendHSMCommand);
+    initAtAuthoritativeBoundary(participantDebug, noOpSend as SendHSMCommand);
     gameCommands.get("hsmSnapshotPending")!(golden.snapshotPending);
     gameCommands.get("hsmSnapshot")!(golden.snapshotMessage);
     document
@@ -198,7 +213,7 @@ describe("HSM transport correlation", () => {
     );
 
     destroyHSMInspector();
-    initHSMInspector(participantDebug, noOpSend as SendHSMCommand);
+    initAtAuthoritativeBoundary(participantDebug, noOpSend as SendHSMCommand);
     gameCommands.get("hsmSnapshotPending")!(golden.snapshotPending);
     gameCommands.get("hsmSnapshotFailure")!(golden.snapshotFailure);
     expect(document.querySelector("#hsm-debug-failure")?.textContent).toContain(
@@ -210,7 +225,7 @@ describe("HSM transport correlation", () => {
   });
 
   test("a correlated unavailable response clears loading with one fixed privacy-safe message", () => {
-    initHSMInspector(participantDebug, noOpSend as SendHSMCommand);
+    initAtAuthoritativeBoundary(participantDebug, noOpSend as SendHSMCommand);
     gameCommands.get("hsmSnapshotPending")!(golden.snapshotPending);
 
     const unavailable = {
@@ -240,7 +255,7 @@ describe("HSM transport correlation", () => {
   });
 
   test("correlated rejections leave loading instead of hanging", () => {
-    initHSMInspector(participantDebug, noOpSend as SendHSMCommand);
+    initAtAuthoritativeBoundary(participantDebug, noOpSend as SendHSMCommand);
     handleHSMSnapshotRejected(golden.snapshotRejected);
     expect(document.querySelector("#hsm-debug-failure")?.textContent).toContain(
       golden.snapshotRejected.reasonCode,
@@ -267,7 +282,7 @@ describe("HSM transport correlation", () => {
 
   test("times out missing responses and clears the loading state", () => {
     jest.useFakeTimers();
-    initHSMInspector(participantDebug, noOpSend as SendHSMCommand);
+    initAtAuthoritativeBoundary(participantDebug, noOpSend as SendHSMCommand);
 
     jest.advanceTimersByTime(HSM_REQUEST_TIMEOUT_MS);
 
@@ -275,6 +290,17 @@ describe("HSM transport correlation", () => {
     expect(document.querySelector("#hsm-debug-failure")?.textContent).toBe(
       "Diagnostic Snapshot request timed out.",
     );
+  });
+
+  test("keeps an acknowledged snapshot loading while exact evaluation runs", () => {
+    jest.useFakeTimers();
+    initAtAuthoritativeBoundary(participantDebug, noOpSend as SendHSMCommand);
+    handleHSMSnapshotPending(golden.snapshotPending);
+
+    jest.advanceTimersByTime(HSM_REQUEST_TIMEOUT_MS);
+
+    expect(document.querySelector("#hsm-debug-loading")).not.toBeNull();
+    expect(document.querySelector("#hsm-debug-failure")).toBeNull();
   });
 
   test("spectator read-only state comes from viewerKind, not a magic identity", () => {

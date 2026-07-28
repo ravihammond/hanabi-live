@@ -53,6 +53,7 @@ interface InspectorState {
   targetBoundary: number;
   maxBoundary: number;
   gameFinished: boolean;
+  coordinateReady: boolean;
   evidenceBoundary: number;
   actorPlayer: number;
   perspectivePlayer: number;
@@ -124,6 +125,7 @@ export function initHSMInspector(
     targetBoundary: 0,
     maxBoundary: 0,
     gameFinished: false,
+    coordinateReady: false,
     evidenceBoundary: 0,
     actorPlayer: debug.ownPerspective,
     perspectivePlayer: debug.ownPerspective,
@@ -153,7 +155,6 @@ export function initHSMInspector(
   document.body.classList.add("hsm-debug-authorized");
   document.addEventListener("click", handleFullDetailsClick);
   render();
-  requestSnapshot();
 }
 
 export function destroyHSMInspector(): void {
@@ -237,7 +238,8 @@ export function setHSMTargetBoundary(
     nextTargetNavigation = "visible-replay";
   }
   if (
-    state.targetBoundary === nextTarget
+    state.coordinateReady
+    && state.targetBoundary === nextTarget
     && state.maxBoundary === nextMax
     && state.actorPlayer === actorPlayer
     && state.gameFinished === gameFinished
@@ -248,6 +250,7 @@ export function setHSMTargetBoundary(
   state.targetBoundary = nextTarget;
   state.maxBoundary = nextMax;
   state.gameFinished = gameFinished;
+  state.coordinateReady = true;
   state.actorPlayer = actorPlayer;
   state.targetNavigation = nextTargetNavigation;
   if (state.followActor) {
@@ -291,6 +294,10 @@ export function handleHSMSnapshotPending(
   const bound = bindPendingSnapshot(message, pending);
   if (bound !== null) {
     state.pendingSnapshot = bound;
+    // The short client timeout covers a missing server acknowledgement. Once
+    // the request is bound, exact HSM evaluation owns its terminal response
+    // and may legitimately outlive that acknowledgement window.
+    requestTimeouts.clearSnapshot();
     state.semanticProfileID = message.semanticProfileID;
     if (message.actorPlayer >= 0) {
       state.actorPlayer = message.actorPlayer;
@@ -454,7 +461,12 @@ export function handleHSMPhysicalTruthRejected(
 }
 
 function requestSnapshot() {
-  if (state === null || sendCommand === null || config === null) {
+  if (
+    state === null
+    || sendCommand === null
+    || config === null
+    || !state.coordinateReady
+  ) {
     return;
   }
   state.loading = true;

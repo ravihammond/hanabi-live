@@ -41,6 +41,15 @@ function noOpSend(_command: string, _data: Readonly<Record<string, unknown>>) {
   // This test injects transport messages directly.
 }
 
+function initAtAuthoritativeBoundary(
+  config: HSMDebugInit,
+  send: SendHSMCommand,
+  actorPlayer = 0,
+): void {
+  initHSMInspector(config, send);
+  setHSMTargetBoundary(0, 0, actorPlayer);
+}
+
 describe("native HSM inspector", () => {
   afterEach(() => {
     destroyHSMInspector();
@@ -168,7 +177,7 @@ describe("native HSM inspector", () => {
     setHSMTargetBoundary(4, 4, 1);
     handleHSMSnapshotPending({
       ...golden.snapshotPending,
-      clientRequestID: 2,
+      clientRequestID: 1,
       targetBoundary: 3,
       evidenceBoundary: 3,
       perspectivePlayer: 1,
@@ -178,7 +187,7 @@ describe("native HSM inspector", () => {
     expect(send).toHaveBeenLastCalledWith(
       "researchHSMRequest",
       expect.objectContaining({
-        clientRequestID: 3,
+        clientRequestID: 2,
         targetBoundary: 3,
         perspectivePlayer: 0,
       }),
@@ -263,7 +272,7 @@ describe("native HSM inspector", () => {
         },
       ],
     };
-    initHSMInspector(debug, noOpSend as SendHSMCommand);
+    initAtAuthoritativeBoundary(debug, noOpSend as SendHSMCommand);
     handleHSMSnapshotPending(golden.snapshotPending);
     handleHSMSnapshot({
       ...golden.snapshotMessage,
@@ -323,7 +332,7 @@ describe("native HSM inspector", () => {
         },
       ],
     };
-    initHSMInspector(debug, noOpSend as SendHSMCommand);
+    initAtAuthoritativeBoundary(debug, noOpSend as SendHSMCommand);
     handleHSMSnapshotPending(golden.snapshotPending);
     handleHSMSnapshot({
       ...golden.snapshotMessage,
@@ -391,7 +400,7 @@ describe("native HSM inspector", () => {
       ],
     };
 
-    initHSMInspector(debug, noOpSend as SendHSMCommand);
+    initAtAuthoritativeBoundary(debug, noOpSend as SendHSMCommand);
     handleHSMSnapshotPending(golden.snapshotPending);
     handleHSMSnapshot({
       ...golden.snapshotMessage,
@@ -421,7 +430,7 @@ describe("native HSM inspector", () => {
         },
       ],
     };
-    initHSMInspector(debug, noOpSend as SendHSMCommand);
+    initAtAuthoritativeBoundary(debug, noOpSend as SendHSMCommand);
     handleHSMSnapshotPending(golden.snapshotPending);
     handleHSMSnapshot({
       ...golden.snapshotMessage,
@@ -492,7 +501,7 @@ describe("native HSM inspector", () => {
         },
       ],
     };
-    initHSMInspector(debug, noOpSend as SendHSMCommand);
+    initAtAuthoritativeBoundary(debug, noOpSend as SendHSMCommand);
     handleHSMSnapshotPending(golden.snapshotPending);
     handleHSMSnapshot({
       ...golden.snapshotMessage,
@@ -544,7 +553,7 @@ describe("native HSM inspector", () => {
         },
       ],
     }));
-    initHSMInspector(debug, noOpSend as SendHSMCommand);
+    initAtAuthoritativeBoundary(debug, noOpSend as SendHSMCommand);
     handleHSMSnapshotPending(golden.snapshotPending);
     handleHSMSnapshot({
       ...golden.snapshotMessage,
@@ -569,7 +578,7 @@ describe("native HSM inspector", () => {
   });
 
   test("leaves loading with a correlated typed failure", () => {
-    initHSMInspector(debug, noOpSend as SendHSMCommand);
+    initAtAuthoritativeBoundary(debug, noOpSend as SendHSMCommand);
     handleHSMSnapshotPending(golden.snapshotPending);
     handleHSMSnapshotFailure(golden.snapshotFailure);
 
@@ -624,7 +633,7 @@ describe("native HSM inspector", () => {
       jest.fn<
         (command: string, data: Readonly<Record<string, unknown>>) => void
       >();
-    initHSMInspector(
+    initAtAuthoritativeBoundary(
       { ...debug, physicalTruthGranted: true },
       send as SendHSMCommand,
     );

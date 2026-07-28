@@ -1069,6 +1069,57 @@ func TestHSMSnapshotRequestBindsSemanticProfileAndAuthorityLegalProjection(t *te
 	}
 }
 
+func TestHSMSnapshotRequestPreservesActorLegalProjectionForSwitchedObserver(t *testing.T) {
+	researchTestInit(t)
+	commandInit()
+	router := researchTestRouter()
+	payload := researchSingleGamePayload()
+	payload.RosterPlayers[0].HSMDebugCapability = ResearchHSMCapabilitySwitchable
+	response := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/single-game",
+		payload,
+		"secret",
+	)
+	var created CreatedResearchSingleGame
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to parse creation response: %v", err)
+	}
+	join := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	researchRecordHSMDecisionBoundary(context.Background(), created.TableID)
+
+	session := researchSessions[created.GameID]
+	session.HSMMutex.Lock()
+	expectedProjection := session.HSMLegalProjectionsByBoundary[0]
+	session.HSMMutex.Unlock()
+
+	commandResearchHSMRequest(context.Background(), viewer, &CommandData{
+		TableID:                created.TableID,
+		HSMProtocolVersion:     ResearchHSMProtocolVersion,
+		HSMArchiveGenerationID: created.HSMArchiveGenerationID,
+		HSMClientRequestID:     1,
+		HSMTargetBoundary:      0,
+		HSMEvidenceBoundary:    0,
+		HSMPerspectivePlayer:   1,
+	})
+
+	request := onlyPendingHSMSnapshotRequest(t, created.GameID)
+	if request.ActorPlayer == request.PerspectivePlayer {
+		t.Fatalf("test requires a switched non-actor perspective: %#v", request)
+	}
+	if request.AuthorityLegalProjection.Digest != expectedProjection.Digest {
+		t.Fatalf(
+			"switched observer replaced the actor's authority legal projection: got %s, want %s",
+			request.AuthorityLegalProjection.Digest,
+			expectedProjection.Digest,
+		)
+	}
+}
+
 func TestHSMPublicationRejectsIncompleteNestedSuccessAndFailurePayloads(t *testing.T) {
 	tests := []struct {
 		name        string

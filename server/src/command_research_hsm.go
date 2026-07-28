@@ -84,9 +84,6 @@ func commandResearchHSMRequest(ctx context.Context, s *Session, d *CommandData) 
 		researchRejectHSMSnapshotRequest(s, d, "authority_projection_unavailable")
 		return
 	}
-	if d.HSMPerspectivePlayer != actor {
-		authorityProjection = newResearchHSMLegalProjection(nil)
-	}
 	session.HSMMutex.Lock()
 	if d.HSMArchiveGenerationID != session.HSMArchiveGenerationID {
 		session.HSMMutex.Unlock()
