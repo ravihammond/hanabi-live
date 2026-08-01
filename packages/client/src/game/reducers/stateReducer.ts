@@ -10,8 +10,10 @@ import { gameReducer, getInitialGameState } from "@hanabi-live/game";
 import { assertDefined, assertNotNull } from "complete-common";
 import type { Draft } from "immer";
 import { castDraft, original, produce } from "immer";
-import type { State } from "../types/State";
 import type { Action } from "../types/actions";
+import type { State } from "../types/State";
+import type { UnifiedProjectionData } from "../types/UnifiedController";
+import { initialState } from "./initialStates/initialState";
 import { notesReducer } from "./notesReducer";
 import { replayReducer } from "./replayReducer";
 import { shouldStoreSegment } from "./stateReducerHelpers";
@@ -21,6 +23,34 @@ export const stateReducer = produce(stateReducerFunction, {} as State);
 
 function stateReducerFunction(state: Draft<State>, action: Action) {
   switch (action.type) {
+    case "unifiedControllerInit": {
+      state.playing = false;
+      state.shadowing = true;
+      state.finished = false;
+      state.replay.active =
+        action.controller.selectedBoundary !== action.controller.liveBoundary;
+      state.replay.segment = action.controller.selectedBoundary;
+      state.replay.shared = null;
+      state.replay.hypothetical = null;
+      state.unifiedController = castDraft({
+        ...action.controller,
+        projectionInstalled: false,
+        terminationVote: false,
+      });
+      break;
+    }
+
+    case "unifiedProjection": {
+      const previousState = original(state);
+      assertDefined(
+        previousState,
+        "Failed to get the state while installing a unified projection.",
+      );
+      return castDraft(
+        makeUnifiedProjectionState(previousState, action.projection),
+      );
+    }
+
     case "gameActionList": {
       // Calculate all the intermediate states.
       const initialGameState = getInitialGameState(state.metadata);
@@ -198,8 +228,10 @@ function stateReducerFunction(state: Draft<State>, action: Action) {
         // premove prior to sending our action to the server.)
         state.premove = null;
       } else if (
+        (state.unifiedController === null
+          || state.unifiedController === undefined)
         // Only allow premoves in ongoing games.
-        !state.finished
+        && !state.finished
         // Only allow premoves when it is not our turn.
         && state.ongoingGame.turn.currentPlayerIndex
           !== state.metadata.ourPlayerIndex
@@ -316,19 +348,126 @@ function stateReducerFunction(state: Draft<State>, action: Action) {
 
   // Show the appropriate state depending on the situation.
   state.visibleState = visualStateToShow(state, action);
+  return undefined;
+}
+
+function makeUnifiedProjectionState(
+  previousState: State,
+  projection: UnifiedProjectionData,
+): State {
+  const controller = previousState.unifiedController ?? null;
+  assertNotNull(
+    controller,
+    "Received a unified projection without a unified controller.",
+  );
+
+  const metadata: GameMetadata = {
+    ...previousState.metadata,
+    ourPlayerIndex: projection.viewedSeat,
+  };
+  const freshState = initialState(metadata);
+  const { game, states } = reduceGameActions(
+    projection.actions,
+    freshState.ongoingGame,
+    false,
+    true,
+    previousState.finished,
+    metadata,
+  );
+  const visibleState = states[projection.selectedBoundary];
+  assertDefined(
+    visibleState,
+    `Unified projection omitted selected boundary ${projection.selectedBoundary}.`,
+  );
+
+  const projectedNotes = notesReducer(
+    freshState.notes,
+    { type: "noteListPlayer", texts: projection.notes },
+    metadata,
+    false,
+    previousState.finished,
+  );
+  const cardIdentities = freshState.cardIdentities.map((identity, index) => {
+    const projectedCard = game.deck[index];
+    return projectedCard === undefined
+      ? identity
+      : {
+          suitIndex: projectedCard.suitIndex,
+          rank: projectedCard.rank,
+        };
+  });
+
+  const projectionState: State = {
+    ...freshState,
+    visibleState,
+    ongoingGame: game,
+    replay: {
+      ...freshState.replay,
+      active: projection.selectedBoundary !== projection.liveBoundary,
+      segment: projection.selectedBoundary,
+      states,
+      actions: projection.actions,
+      databaseID: previousState.replay.databaseID,
+    },
+    playing: false,
+    shadowing: true,
+    unifiedController: {
+      protocolCapability: controller.protocolCapability,
+      viewedSeat: projection.viewedSeat,
+      currentTurnSeat: projection.currentTurnSeat,
+      selectedBoundary: projection.selectedBoundary,
+      liveBoundary: projection.liveBoundary,
+      projectionRevision: projection.projectionRevision,
+      finished: projection.finished,
+      capabilities: projection.capabilities,
+      projectionInstalled: true,
+      terminationVote: projection.terminationVote,
+    },
+    finished: previousState.finished,
+    datetimeStarted: previousState.datetimeStarted,
+    datetimeFinished: previousState.datetimeFinished,
+    cardIdentities,
+    premove: null,
+    pause: {
+      active: projection.paused,
+      playerIndex: projection.pausePlayerIndex,
+      queued: false,
+    },
+    spectators: previousState.spectators,
+    notes: {
+      ...projectedNotes,
+      efficiencyModifier: previousState.notes.efficiencyModifier,
+    },
+    UI: previousState.UI,
+  };
+
+  if (projection.cardIdentities === undefined) {
+    return projectionState;
+  }
+  return {
+    ...projectionState,
+    cardIdentities: projection.cardIdentities,
+    replay: {
+      ...projectionState.replay,
+      actions: rehydrateScrubbedActions(
+        projectionState,
+        projection.cardIdentities,
+      ),
+    },
+  };
 }
 
 // Runs through a list of actions from an initial state, and returns the final state and all
 // intermediate states.
 function reduceGameActions(
   actions: readonly GameAction[],
-  initialState: GameState,
+  initialGameState: GameState,
   playing: boolean,
   shadowing: boolean,
   finished: boolean,
   metadata: GameMetadata,
 ) {
-  const states: GameState[] = [initialState];
+  const states: GameState[] = [initialGameState];
 
   // eslint-disable-next-line unicorn/no-array-reduce
   const game = actions.reduce((s: GameState, a: GameAction) => {
@@ -350,7 +489,7 @@ function reduceGameActions(
     }
 
     return nextState;
-  }, initialState);
+  }, initialGameState);
 
   return { game, states };
 }

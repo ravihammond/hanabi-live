@@ -30,6 +30,11 @@ type CommandData struct {
 	Type   int `json:"type"`
 	Target int `json:"target"`
 	Value  int `json:"value"`
+	// Unified manual actions bind intent to the exact authoritative projection that produced it.
+	ExpectedActorSeat          *int    `json:"expectedActorSeat"`
+	ExpectedViewedSeat         *int    `json:"expectedViewedSeat"`
+	ExpectedLiveBoundary       *int    `json:"expectedLiveBoundary"`
+	ExpectedProjectionRevision *uint64 `json:"expectedProjectionRevision"`
 
 	// votes to kill
 	Votes []int `json:"votes"`
@@ -78,6 +83,10 @@ type CommandData struct {
 	HSMEvidenceBoundary    int    `json:"evidenceBoundary"`
 	HSMPerspectivePlayer   int    `json:"perspectivePlayer"`
 
+	// Unified projection navigation. Both fields are required for researchPerspective.
+	UnifiedViewedSeat       *int `json:"viewedSeat"`
+	UnifiedSelectedBoundary *int `json:"selectedBoundary"`
+
 	// Used internally
 	// (a tag of "-" means that the JSON encoder will ignore the field)
 	Username string `json:"-"` // Used to mark the username of a chat message
@@ -103,6 +112,8 @@ type CommandData struct {
 	// and deadlocks the server.  When set, loadDatabaseOptionsToTable, applyNotesToPlayers,
 	// and the GetDatetimes call in replayCreate all skip their individual DB queries.
 	PreFetchedReplay *PreFetchedReplayData `json:"-"`
+	// Set only by an already-authorized unified capability handler such as tableTerminate.
+	UnifiedControlAuthorized bool `json:"-"`
 }
 
 var (
@@ -126,6 +137,7 @@ func commandInit() {
 	commandMap["tableSpectate"] = commandTableSpectate
 	commandMap["tableRestart"] = commandTableRestart
 	commandMap["researchRestart"] = commandResearchRestart
+	commandMap["researchPerspective"] = commandResearchPerspective
 	commandMap["researchHSMRequest"] = commandResearchHSMRequest
 	commandMap["researchHSMPhysicalTruthRequest"] = commandResearchHSMPhysicalTruthRequest
 	commandMap["tableUpdate"] = commandTableUpdate

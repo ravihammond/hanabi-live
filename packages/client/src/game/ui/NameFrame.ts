@@ -6,7 +6,12 @@ import * as tooltips from "../../tooltips";
 import { globals } from "./UIGlobals";
 import { backToLobby } from "./backToLobby";
 import { LABEL_COLOR } from "./constants";
+import * as cursor from "./cursor";
 import * as konvaTooltips from "./konvaTooltips";
+import {
+  isUnifiedController,
+  requestUnifiedProjection,
+} from "./unifiedController";
 
 export class NameFrame extends Konva.Group {
   playerIndex: PlayerIndex;
@@ -70,6 +75,18 @@ export class NameFrame extends Konva.Group {
         }
       },
     );
+    this.playerName.on("mouseenter", () => {
+      if (globals.store !== null && isUnifiedController(globals.state)) {
+        cursor.set("hand");
+        this.playerName.fill("#ffdf00");
+      }
+    });
+    this.playerName.on("mouseleave", () => {
+      if (globals.store !== null && isUnifiedController(globals.state)) {
+        cursor.set("default");
+        this.playerName.fill(this.leftLine.stroke());
+      }
+    });
     this.add(this.playerName);
 
     w *= 1.4;
@@ -170,6 +187,9 @@ export class NameFrame extends Konva.Group {
 
   // Players can left-click on the name frame to see a log of only that player's actions.
   leftClick(): void {
+    if (requestUnifiedProjection(this.playerIndex)) {
+      return;
+    }
     const username = this.playerName.text();
     globals.elements.fullActionLog!.showPlayerActions(username);
   }
@@ -179,6 +199,9 @@ export class NameFrame extends Konva.Group {
   // right-click context menu come up. (The right-click context menu will be enabled as soon as we
   // execute the "backToLobby()" function.)
   rightClick(): void {
+    if (requestUnifiedProjection(this.playerIndex)) {
+      return;
+    }
     // Find the index corresponding to this player.
     const playerName = this.playerName.text();
     const shadowingPlayerIndex =

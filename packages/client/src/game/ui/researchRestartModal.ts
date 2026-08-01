@@ -1,7 +1,7 @@
 import { closeModals, showPrompt } from "../../modals";
 import { getHTMLElement } from "../../utils";
 
-type ResearchRestartKind = "same_seed" | "next_game";
+export type ResearchRestartKind = "same_seed" | "next_game";
 
 /** Initialize the browser modal used by a persistent Single Game Restart Controller. */
 export function initResearchRestartModal(

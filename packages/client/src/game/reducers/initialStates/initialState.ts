@@ -30,6 +30,7 @@ export function initialState(metadata: GameMetadata): State {
 
     playing: true,
     shadowing: false,
+    unifiedController: null,
     finished: false,
 
     datetimeStarted: null,

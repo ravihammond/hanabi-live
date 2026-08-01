@@ -13,6 +13,10 @@ import type {
 } from "@hanabi-live/game";
 import type { ClientAction } from "./ClientAction";
 import type { UIAction } from "./UIAction";
+import type {
+  UnifiedControllerInit,
+  UnifiedProjectionData,
+} from "./UnifiedController";
 
 export type Action =
   | ActionInit
@@ -25,6 +29,8 @@ export type Action =
   | ActionPauseQueue
   | ActionSpectators
   | ActionFinishOngoingGame
+  | ActionUnifiedControllerInit
+  | ActionUnifiedProjection
   | UIAction;
 
 export type ActionIncludingHypothetical =
@@ -110,6 +116,16 @@ interface ActionFinishOngoingGame {
   readonly databaseID: number;
   readonly sharedReplayLeader: string;
   readonly datetimeFinished: string;
+}
+
+interface ActionUnifiedControllerInit {
+  readonly type: "unifiedControllerInit";
+  readonly controller: UnifiedControllerInit;
+}
+
+interface ActionUnifiedProjection {
+  readonly type: "unifiedProjection";
+  readonly projection: UnifiedProjectionData;
 }
 
 // --------------

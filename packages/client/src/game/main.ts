@@ -10,7 +10,9 @@ import * as tooltips from "../tooltips";
 import { getHTMLElement } from "../utils";
 import * as chat from "./chat";
 import { HanabiUI } from "./ui/HanabiUI";
+import type { ResearchRestartKind } from "./ui/researchRestartModal";
 import { initResearchRestartModal } from "./ui/researchRestartModal";
+import { canRestartGame } from "./ui/unifiedController";
 
 const lobbyChatText = getHTMLElement("#lobby-chat-text");
 
@@ -21,11 +23,21 @@ export function init(): void {
     }
   });
 
-  initResearchRestartModal((restartKind) => {
-    globals.conn!.send("researchRestart", {
-      tableID: globals.tableID,
-      restartKind,
-    });
+  initResearchRestartModal(requestResearchRestart);
+}
+
+export function requestResearchRestart(restartKind: ResearchRestartKind): void {
+  const uiGlobals = globals.ui?.globals;
+  const state = uiGlobals?.store?.getState();
+  if (
+    state !== undefined
+    && !canRestartGame(state, uiGlobals?.researchRestartController ?? false)
+  ) {
+    return;
+  }
+  globals.conn!.send("researchRestart", {
+    tableID: globals.tableID,
+    restartKind,
   });
 }
 

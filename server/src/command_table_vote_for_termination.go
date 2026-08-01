@@ -9,10 +9,11 @@ import (
 // corner
 //
 // Example data:
-// {
-//   tableID: 5,
-//   server: true, // True if a server-initiated termination, otherwise omitted
-// }
+//
+//	{
+//	  tableID: 5,
+//	  server: true, // True if a server-initiated termination, otherwise omitted
+//	}
 func commandTableVoteForTermination(ctx context.Context, s *Session, d *CommandData) {
 	t, exists := getTableAndLock(ctx, s, d.TableID, !d.NoTableLock, !d.NoTablesLock)
 	if !exists {
@@ -25,9 +26,21 @@ func commandTableVoteForTermination(ctx context.Context, s *Session, d *CommandD
 	// Validate that they are in the game
 	playerIndex := t.GetPlayerIndexFromID(s.UserID)
 	if playerIndex == -1 {
-		s.Warning("You are not playing at table " + strconv.FormatUint(t.ID, 10) + ", " +
-			"so you cannot vote to terminate it.")
-		return
+		controller, unified := t.researchUnifiedControllerForSession(s)
+		if !unified {
+			if _, registered := t.researchUnifiedController(s.UserID); registered {
+				s.Warning("This session is no longer the active unified connection.")
+				return
+			}
+			s.Warning("You are not playing at table " + strconv.FormatUint(t.ID, 10) + ", " +
+				"so you cannot vote to terminate it.")
+			return
+		}
+		if !researchUnifiedCapabilities(t, controller).CanTerminate {
+			s.Warning("The unified controller cannot terminate this game.")
+			return
+		}
+		playerIndex = controller.ViewedSeat
 	}
 
 	// Validate that the game has started
@@ -47,6 +60,23 @@ func commandTableVoteForTermination(ctx context.Context, s *Session, d *CommandD
 
 func voteForTermination(ctx context.Context, s *Session, d *CommandData, t *Table, playerIndex int) {
 	newVote := t.ChangeVote(playerIndex)
+	_, unified := t.researchUnifiedControllerForSession(s)
+	if unified {
+		if t.ShouldTerminateByVotes() {
+			commandAction(ctx, s, &CommandData{ // nolint: exhaustivestruct
+				TableID:                  t.ID,
+				Type:                     ActionTypeEndGameByVote,
+				Target:                   -1,
+				Value:                    EndConditionTerminatedByVote,
+				Votes:                    t.GetVotes(),
+				NoTableLock:              true,
+				UnifiedControlAuthorized: true,
+			})
+		} else {
+			reviseResearchUnifiedProjection(t)
+		}
+		return
+	}
 	// Notify the player about his vote
 	s.NotifyVote(newVote)
 	if t.ShouldTerminateByVotes() {

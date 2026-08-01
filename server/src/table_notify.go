@@ -236,6 +236,9 @@ func (t *Table) NotifyFinishOngoingGame() {
 
 	// At this point, all of the players will have been converted to spectators
 	for _, sp := range t.ActiveSpectators() {
+		if _, unified := t.researchUnifiedController(sp.UserID); unified {
+			continue
+		}
 		sp.Session.Emit("finishOngoingGame", finishOngoingGameMessage)
 	}
 }
@@ -293,6 +296,9 @@ func (t *Table) NotifySpectatorsNote(order int) {
 	g := t.Game
 
 	for _, sp := range t.ActiveSpectators() {
+		if _, unified := t.researchUnifiedController(sp.UserID); unified {
+			continue
+		}
 		// Make an array that contains the combined notes for all the players & spectators
 		// (for a specific card)
 		// However, if this spectator is shadowing a specific player, then only include the note for

@@ -1,6 +1,7 @@
 import type { PauseState } from "../../../types/PauseState";
 import { globals } from "../../UIGlobals";
 import { isOurTurn } from "../../isOurTurn";
+import { canPauseGame, isPlayerProjection } from "../../unifiedController";
 
 export function onChanged(pause: PauseState): void {
   const stageFadeOpacity = pause.active ? 0.8 : 0.3;
@@ -10,7 +11,9 @@ export function onChanged(pause: PauseState): void {
   globals.elements.pauseArea?.visible(pause.active);
 
   // The timer elements may not be initialized under certain conditions (e.g. an untimed game)
-  globals.elements.timer1?.visible(!pause.active && globals.state.playing);
+  globals.elements.timer1?.visible(
+    !pause.active && isPlayerProjection(globals.state),
+  );
   globals.elements.timer2?.visible(!pause.active && !isOurTurn());
   globals.elements.timer1Circle?.visible(pause.queued);
 
@@ -19,7 +22,7 @@ export function onChanged(pause: PauseState): void {
       `by: ${globals.metadata.playerNames[pause.playerIndex]}`,
     );
 
-    if (globals.state.playing) {
+    if (canPauseGame(globals.state)) {
       globals.elements.pauseButton?.setEnabled(true);
       globals.elements.pauseButton?.opacity(1);
     } else {

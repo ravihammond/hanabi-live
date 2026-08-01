@@ -4,8 +4,15 @@ import { globals } from "../../UIGlobals";
 import { isOurTurn } from "../../isOurTurn";
 import * as ourHand from "../../ourHand";
 import * as turn from "../../turn";
+import {
+  canUnifiedControllerAct,
+  isUnifiedController,
+} from "../../unifiedController";
 
 export function shouldShowYourTurnIndicator(state: State): boolean {
+  if (isUnifiedController(state)) {
+    return canUnifiedControllerAct(state);
+  }
   return (
     state.playing
     && state.ongoingGame.turn.currentPlayerIndex
@@ -19,6 +26,9 @@ export function shouldShowYourTurnIndicatorChanged(shouldShow: boolean): void {
 }
 
 export function shouldShowTurnUI(state: State): boolean {
+  if (isUnifiedController(state)) {
+    return canUnifiedControllerAct(state);
+  }
   return (
     (state.replay.hypothetical !== null
       && (state.replay.shared === null || state.replay.shared.amLeader))

@@ -91,8 +91,7 @@ function initCommands(conn: Connection) {
       // 2) "gameActionList" (in response to a "getGameInfo2")
       if (
         globals.ui.globals.loading
-        && commandName !== "init"
-        && commandName !== "gameActionList"
+        && !gameCommandAllowedWhileLoading(commandName)
       ) {
         return;
       }
@@ -100,4 +99,12 @@ function initCommands(conn: Connection) {
       commandFunction(data);
     });
   }
+}
+
+export function gameCommandAllowedWhileLoading(commandName: string): boolean {
+  return (
+    commandName === "init"
+    || commandName === "gameActionList"
+    || commandName === "researchUnifiedProjection"
+  );
 }

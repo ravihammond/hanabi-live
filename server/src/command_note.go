@@ -46,6 +46,28 @@ func commandNote(ctx context.Context, s *Session, d *CommandData) {
 			"so you cannot send a note.")
 		return
 	}
+	controller, unified := t.researchUnifiedControllerForSession(s)
+	if _, registered := t.researchUnifiedController(s.UserID); registered && !unified {
+		s.Warning("This session is no longer the active unified connection.")
+		return
+	}
+	if unified {
+		if !researchUnifiedCapabilities(t, controller).CanEditViewedPlayerNotes {
+			s.Warning("The unified controller cannot edit notes in this game state.")
+			return
+		}
+		if d.ExpectedViewedSeat == nil || d.ExpectedProjectionRevision == nil {
+			s.Warning("Unified notes require an expected viewed seat and projection revision.")
+			return
+		}
+		if *d.ExpectedViewedSeat != controller.ViewedSeat ||
+			*d.ExpectedProjectionRevision != controller.ProjectionRevision {
+			s.Warning("The unified note does not match the active unified projection.")
+			return
+		}
+		playerIndex = controller.ViewedSeat
+		spectatorIndex = -1
+	}
 
 	// Truncate long notes
 	// (we do this first to prevent wasting CPU cycles on validating extremely long notes)
@@ -82,6 +104,9 @@ func commandNote(ctx context.Context, s *Session, d *CommandData) {
 	}
 
 	note(d, t, playerIndex, spectatorIndex)
+	if unified {
+		reviseResearchUnifiedProjection(t)
+	}
 }
 
 func note(d *CommandData, t *Table, playerIndex int, spectatorIndex int) {

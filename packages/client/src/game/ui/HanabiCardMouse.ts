@@ -1,19 +1,20 @@
 import { isCardDiscarded, isCardPlayed } from "@hanabi-live/game";
 import type Konva from "konva";
 import * as tooltips from "../../tooltips";
+import * as arrows from "./arrows";
 import type { CardLayout } from "./CardLayout";
+import { DOUBLE_TAP_DELAY_SECONDS } from "./constants";
+import * as cursor from "./cursor";
 import type { HanabiCard } from "./HanabiCard";
 import { HanabiCardClick } from "./HanabiCardClick";
 import { mouseDownSpeedrun } from "./HanabiCardClickSpeedrun";
 import { HanabiCardDblTap, HanabiCardTap } from "./HanabiCardTouchActions";
-import type { LayoutChild } from "./LayoutChild";
-import { globals } from "./UIGlobals";
-import * as arrows from "./arrows";
-import { DOUBLE_TAP_DELAY_SECONDS } from "./constants";
-import * as cursor from "./cursor";
 import { hasHSMCardTooltip } from "./hsmInspector";
 import * as konvaTooltips from "./konvaTooltips";
+import type { LayoutChild } from "./LayoutChild";
 import * as notes from "./notes";
+import { globals } from "./UIGlobals";
+import { isPlayerProjection } from "./unifiedController";
 
 export function registerMouseHandlers(this: HanabiCard): void {
   // https://konvajs.org/docs/events/Binding_Events.html
@@ -215,7 +216,7 @@ function shouldShowLookCursor(card: HanabiCard) {
 
   // If we are in an in-game replay or we are not a player in an ongoing game, always show the
   // cursor.
-  if (globals.state.replay.active || !globals.state.playing) {
+  if (globals.state.replay.active || !isPlayerProjection(globals.state)) {
     return true;
   }
 

@@ -8,6 +8,11 @@ import type { HanabiCard } from "./HanabiCard";
 import { globals } from "./UIGlobals";
 import { getCardOrStackBase } from "./getCardOrStackBase";
 import { getHSMCardTooltipHTML } from "./hsmInspector";
+import {
+  canEditViewedPlayerNotes,
+  getUnifiedController,
+  isPlayerProjection,
+} from "./unifiedController";
 
 const REMOVE_PIPE_KEYS = new ReadonlySet([
   "ArrowDown",
@@ -42,7 +47,7 @@ function get(order: CardOrder, our: boolean, process = false) {
   // return our note.
   // eslint-disable-next-line func-style
   const processFunc = (text: string) => (process ? prepareContent(text) : text);
-  if (our || globals.state.playing) {
+  if (our || isPlayerProjection(globals.state)) {
     return processFunc(globals.state.notes.ourNotes[order]?.text ?? "");
   }
 
@@ -77,8 +82,12 @@ function get(order: CardOrder, our: boolean, process = false) {
  * 3) Check for new card identities.
  */
 export function set(order: CardOrder, text: string): void {
+  if (!canEditViewedPlayerNotes(globals.state)) {
+    return;
+  }
   const oldNote = globals.state.notes.ourNotes[order]!.text;
   globals.lastNote = text;
+  const unifiedController = getUnifiedController(globals.state);
 
   // Send the note to the server.
   if (!globals.state.finished && text !== oldNote) {
@@ -86,7 +95,19 @@ export function set(order: CardOrder, text: string): void {
       tableID: globals.lobby.tableID,
       order,
       note: text,
+      ...(unifiedController === null
+        ? {}
+        : {
+            expectedViewedSeat: unifiedController.viewedSeat,
+            expectedProjectionRevision: unifiedController.projectionRevision,
+          }),
     });
+  }
+
+  // Unified notes are installed only by the complete revisioned projection. Optimistically mutating
+  // here would leave stale text behind if the server rejected this command.
+  if (unifiedController !== null) {
+    return;
   }
 
   globals.store!.dispatch({
@@ -165,6 +186,9 @@ export function openEditTooltip(
   isDesktop = true,
   addText = "",
 ): void {
+  if (!canEditViewedPlayerNotes(globals.state)) {
+    return;
+  }
   // Do not edit any notes in dedicated replays.
   if (globals.state.finished) {
     return;

@@ -31,14 +31,23 @@ func commandLoaded(ctx context.Context, s *Session, d *CommandData) {
 	// Validate that they are a player
 	playerIndex := t.GetPlayerIndexFromID(s.UserID)
 	if playerIndex == -1 {
-		// Do not show a warning message,
-		// since the client is programmed to also send a "loaded" command
-		return
+		if _, registered := t.researchUnifiedController(s.UserID); !registered {
+			// Do not show a warning message, since spectators also send "loaded".
+			return
+		}
+		if _, active := t.researchUnifiedControllerForSession(s); !active {
+			s.Warning("This session is no longer the active unified connection.")
+			return
+		}
+		for _, player := range t.Players {
+			player.Present = true
+		}
+		playerIndex = g.ActivePlayerIndex
+	} else {
+		// Set their "present" variable back to true, which turns their name from red to black.
+		t.Players[playerIndex].Present = true
 	}
 
-	// Set their "present" variable back to true,
-	// which will turn their name from red to black
-	t.Players[playerIndex].Present = true
 	t.NotifyConnected()
 
 	// Start the timer if this is the first player

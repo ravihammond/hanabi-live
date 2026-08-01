@@ -426,13 +426,13 @@ type ResearchHSMSnapshot struct {
 	raw                            json.RawMessage
 }
 
-// UnmarshalJSON retains the Python-owned semantic DTO verbatim. Typed fields
-// remain only for legacy in-process fixtures; production transport never
-// reinterprets or reconstructs the inner payload.
+// UnmarshalJSON retains the semantic DTO verbatim after enforcing its typed transport schema.
 func (snapshot *ResearchHSMSnapshot) UnmarshalJSON(data []byte) error {
 	type snapshotAlias ResearchHSMSnapshot
 	var decoded snapshotAlias
-	if err := json.Unmarshal(data, &decoded); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
 		return err
 	}
 	*snapshot = ResearchHSMSnapshot(decoded)
@@ -586,27 +586,23 @@ func (guard ResearchHSMPhysicalGuard) validateForRequest(
 }
 
 type ResearchHSMUnsatisfiableCore struct {
-	Count            int    `json:"count"`
-	Valid            []bool `json:"valid"`
-	CoordinateKind   []int  `json:"coordinate_kind"`
-	TransitionIndex  []int  `json:"transition_index"`
-	RuleIndex        []int  `json:"rule_index"`
-	SubjectIndex     []int  `json:"subject_index"`
-	EvidenceBoundary []int  `json:"evidence_boundary"`
-	ProvenanceID     []int  `json:"provenance_id"`
-	SubsetMinimal    bool   `json:"subset_minimal"`
+	SubsetMinimal    bool     `json:"subset_minimal"`
+	CoordinateKind   []string `json:"coordinate_kind"`
+	TransitionIndex  []int    `json:"transition_index"`
+	RuleIndex        []int    `json:"rule_index"`
+	SubjectIndex     []int    `json:"subject_index"`
+	EvidenceBoundary []int    `json:"evidence_boundary"`
+	ProvenanceID     []int    `json:"provenance_id"`
 }
 
 type ResearchHSMInvariantFailure struct {
-	PrimaryDefect    int    `json:"primary_defect"`
-	Count            int    `json:"count"`
-	Valid            []bool `json:"valid"`
-	Defect           []int  `json:"defect"`
-	TransitionIndex  []int  `json:"transition_index"`
-	RuleIndex        []int  `json:"rule_index"`
-	SubjectIndex     []int  `json:"subject_index"`
-	EvidenceBoundary []int  `json:"evidence_boundary"`
-	ProvenanceID     []int  `json:"provenance_id"`
+	PrimaryDefect    string   `json:"primary_defect"`
+	Defect           []string `json:"defect"`
+	TransitionIndex  []int    `json:"transition_index"`
+	RuleIndex        []int    `json:"rule_index"`
+	SubjectIndex     []int    `json:"subject_index"`
+	EvidenceBoundary []int    `json:"evidence_boundary"`
+	ProvenanceID     []int    `json:"provenance_id"`
 }
 
 type ResearchHSMFailure struct {
@@ -622,33 +618,17 @@ type ResearchHSMFailure struct {
 	raw                   json.RawMessage
 }
 
-// UnmarshalJSON retains the Python-owned typed failure verbatim. The server
-// authenticates and correlates the outer envelope; Python owns this semantic
-// payload's schema and validation.
+// UnmarshalJSON retains the typed failure verbatim after enforcing its nested schema.
 func (failure *ResearchHSMFailure) UnmarshalJSON(data []byte) error {
-	type failureHeader struct {
-		Category              string `json:"category"`
-		Phase                 string `json:"phase"`
-		TopologyID            int    `json:"topology_id"`
-		CapacityManifestID    string `json:"capacity_manifest_id"`
-		SemanticProgramID     string `json:"semantic_program_id"`
-		SemanticProfileID     int    `json:"semantic_profile_id"`
-		LegalActionProjection []bool `json:"legal_action_projection"`
-	}
-	var header failureHeader
-	if err := json.Unmarshal(data, &header); err != nil {
+	type failureAlias ResearchHSMFailure
+	var decoded failureAlias
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
 		return err
 	}
-	*failure = ResearchHSMFailure{
-		Category:              header.Category,
-		Phase:                 header.Phase,
-		TopologyID:            header.TopologyID,
-		CapacityManifestID:    header.CapacityManifestID,
-		SemanticProgramID:     header.SemanticProgramID,
-		SemanticProfileID:     header.SemanticProfileID,
-		LegalActionProjection: header.LegalActionProjection,
-		raw:                   append(json.RawMessage(nil), data...),
-	}
+	*failure = ResearchHSMFailure(decoded)
+	failure.raw = append(json.RawMessage(nil), data...)
 	return nil
 }
 
@@ -718,10 +698,8 @@ func (failure ResearchHSMFailure) validateForRequest(request *ResearchHSMSnapsho
 }
 
 func (core ResearchHSMUnsatisfiableCore) validate() error {
-	length := len(core.Valid)
-	if core.Count < 0 || core.Count > length ||
-		core.Valid == nil ||
-		core.CoordinateKind == nil ||
+	length := len(core.CoordinateKind)
+	if length == 0 ||
 		core.TransitionIndex == nil ||
 		core.RuleIndex == nil ||
 		core.SubjectIndex == nil ||
@@ -735,14 +713,26 @@ func (core ResearchHSMUnsatisfiableCore) validate() error {
 		len(core.ProvenanceID) != length {
 		return fmt.Errorf("HSM failure unsatisfiable core has an incomplete fixed schema")
 	}
+	validCoordinateKinds := map[string]bool{
+		"evaluation":  true,
+		"stable_card": true,
+		"transition":  true,
+		"rule":        true,
+		"action":      true,
+		"evidence":    true,
+	}
+	for _, coordinateKind := range core.CoordinateKind {
+		if !validCoordinateKinds[coordinateKind] {
+			return fmt.Errorf("HSM failure unsatisfiable core has an invalid coordinate kind")
+		}
+	}
 	return nil
 }
 
 func (failure ResearchHSMInvariantFailure) validate() error {
-	length := len(failure.Valid)
-	if failure.Count < 0 || failure.Count > length ||
-		failure.Valid == nil ||
-		failure.Defect == nil ||
+	length := len(failure.Defect)
+	if strings.TrimSpace(failure.PrimaryDefect) == "" ||
+		length == 0 ||
 		failure.TransitionIndex == nil ||
 		failure.RuleIndex == nil ||
 		failure.SubjectIndex == nil ||
@@ -755,6 +745,11 @@ func (failure ResearchHSMInvariantFailure) validate() error {
 		len(failure.EvidenceBoundary) != length ||
 		len(failure.ProvenanceID) != length {
 		return fmt.Errorf("HSM failure invariant provenance has an incomplete fixed schema")
+	}
+	for _, defect := range failure.Defect {
+		if strings.TrimSpace(defect) == "" {
+			return fmt.Errorf("HSM failure invariant provenance contains an empty defect")
+		}
 	}
 	return nil
 }

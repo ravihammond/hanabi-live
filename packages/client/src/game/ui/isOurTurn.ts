@@ -1,4 +1,8 @@
 import { globals } from "./UIGlobals";
+import {
+  canUnifiedControllerAct,
+  isUnifiedController,
+} from "./unifiedController";
 
 /**
  * Used to determine if it is our turn in the present. (For example, it can be our turn in the
@@ -12,6 +16,10 @@ export function isOurTurn(): boolean {
       globals.state.replay.shared === null
       || globals.state.replay.shared.amLeader
     );
+  }
+
+  if (isUnifiedController(globals.state)) {
+    return canUnifiedControllerAct(globals.state);
   }
 
   // Handle the case of an ongoing game.

@@ -218,6 +218,12 @@ func (s *Session) NotifyConnected(t *Table) {
 }
 
 func (s *Session) NotifyGameAction(t *Table, action interface{}) {
+	// A unified controller receives one complete, revisioned projection after the mutation. Sending
+	// incremental actions here could mix the old viewed seat with the new automatically followed
+	// seat before that projection is installed.
+	if _, unified := t.researchUnifiedController(s.UserID); unified {
+		return
+	}
 	scrubbedAction := CheckScrub(t, action, s.UserID)
 
 	type GameActionMessage struct {
@@ -264,6 +270,9 @@ func (s *Session) NotifyTime(t *Table) {
 }
 
 func (s *Session) NotifyPause(t *Table) {
+	if _, unified := t.researchUnifiedController(s.UserID); unified {
+		return
+	}
 	g := t.Game
 
 	type PauseMessage struct {
@@ -318,6 +327,11 @@ func (s *Session) NotifyVote(v bool) {
 */
 
 func (s *Session) NotifyCardIdentities(t *Table) {
+	// Unified clients receive only the viewed player's scrubbed action projection. The ordinary
+	// spectator identity list is omniscient and must never cross this capability boundary.
+	if _, unified := t.researchUnifiedController(s.UserID); unified {
+		return
+	}
 	g := t.Game
 
 	type CardIdentitiesMessage struct {

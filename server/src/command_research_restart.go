@@ -8,31 +8,67 @@ const (
 )
 
 // commandResearchRestart records a controller request for the localhost research orchestrator.
-func commandResearchRestart(_ context.Context, s *Session, d *CommandData) {
+func commandResearchRestart(ctx context.Context, s *Session, d *CommandData) {
 	if d.RestartKind != researchRestartSameSeed && d.RestartKind != researchRestartNextGame {
 		s.Warning("The requested research restart kind is not valid.")
 		return
 	}
 
+	unifiedController := false
+	if table, ok := tables.Get(d.TableID, true); ok {
+		table.Lock(ctx)
+		if _, registered := table.researchUnifiedController(s.UserID); registered {
+			controller, active := table.researchUnifiedControllerForSession(s)
+			if !active {
+				table.Unlock(ctx)
+				s.Warning("This session is no longer the active unified connection.")
+				return
+			}
+			unifiedController = researchUnifiedCapabilities(table, controller).CanRestart
+		}
+		table.Unlock(ctx)
+	}
+
+	var researchSession *ResearchSession
 	researchSessionsMutex.Lock()
-	defer researchSessionsMutex.Unlock()
 	for _, session := range researchSessions {
 		if session.TableID != d.TableID || session.Mode != "single_game" {
 			continue
 		}
-		if session.RestartControllerUserID == 0 || s.UserID != session.RestartControllerUserID {
-			s.Warning("Only the Single Game restart controller can restart this run.")
-			return
-		}
-		if session.PendingRestartRequest != nil {
-			return
-		}
-		session.NextRestartRequestID++
-		session.PendingRestartRequest = &ResearchRestartRequest{
-			RequestID: session.NextRestartRequestID,
-			Kind:      d.RestartKind,
-		}
+		researchSession = session
+		break
+	}
+	researchSessionsMutex.Unlock()
+	if researchSession == nil {
+		s.Warning("This table is not a persistent Single Game run.")
 		return
 	}
-	s.Warning("This table is not a persistent Single Game run.")
+
+	researchSession.LifecycleMutex.Lock()
+	if !unifiedController &&
+		(researchSession.RestartControllerUserID == 0 || s.UserID != researchSession.RestartControllerUserID) {
+		researchSession.LifecycleMutex.Unlock()
+		s.Warning("Only the Single Game restart controller can restart this run.")
+		return
+	}
+	if researchSession.LifecycleMutationInProgress || researchSession.PendingRestartRequest != nil {
+		researchSession.LifecycleMutex.Unlock()
+		return
+	}
+	researchSession.NextRestartRequestID++
+	researchSession.PendingRestartRequest = &ResearchRestartRequest{
+		RequestID: researchSession.NextRestartRequestID,
+		Kind:      d.RestartKind,
+	}
+	researchSession.LifecycleMutex.Unlock()
+	if !unifiedController {
+		return
+	}
+	if table, ok := tables.Get(d.TableID, true); ok {
+		table.Lock(ctx)
+		if _, unified := table.researchUnifiedControllerForSession(s); unified {
+			reviseResearchUnifiedProjection(table)
+		}
+		table.Unlock(ctx)
+	}
 }

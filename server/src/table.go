@@ -31,7 +31,7 @@ type Table struct {
 	// call (which would be unsafe while holding table/tables locks).
 	OwnerID       int
 	OwnerUsername string
-	Visible bool // Whether or not this table is shown to other users
+	Visible       bool // Whether or not this table is shown to other users
 	// This is an Argon2id hash generated from the plain-text password
 	// that the table creator sends us
 	PasswordHash   string
@@ -49,6 +49,10 @@ type Table struct {
 
 	// All of the game state is contained within the "Game" object
 	Game *Game
+
+	// ResearchUnifiedController is present only for the explicitly selected unified manual mode.
+	// Its mutable state is protected by this table's mutex.
+	ResearchUnifiedController *ResearchUnifiedController `json:"-"`
 
 	// The variant and other game settings are contained within the "Options" object
 	Options      *Options      // Options that are stored in the database
@@ -108,7 +112,9 @@ func NewTable(name string, ownerID int) *Table {
 
 		Chat:     make([]*TableChatMessage, 0),
 		ChatRead: make(map[int]int),
-		Deleted:  false,
+
+		ResearchUnifiedController: nil,
+		Deleted:                   false,
 
 		mutex: &deadlock.Mutex{},
 	}

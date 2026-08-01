@@ -10,6 +10,10 @@ import * as hypothetical from "./hypothetical";
 import { isOurTurn } from "./isOurTurn";
 import * as ourHand from "./ourHand";
 import * as replay from "./replay";
+import {
+  isUnifiedController,
+  unifiedActionEnvelope,
+} from "./unifiedController";
 
 export function begin(): void {
   resetSelectedClue();
@@ -32,6 +36,13 @@ function handlePremove() {
   }
   const { premove } = globals.state;
   const { clueTokens } = globals.state.ongoingGame;
+
+  if (isUnifiedController(globals.state)) {
+    if (premove !== null) {
+      globals.store!.dispatch({ type: "premove", premove: null });
+    }
+    return;
+  }
 
   if (premove === null) {
     return;
@@ -99,6 +110,22 @@ export function end(clientAction: ClientAction): void {
   }
   if (globals.state.replay.hypothetical !== null) {
     hypothetical.sendHypotheticalAction(clientAction);
+    return;
+  }
+
+  const unifiedEnvelope = unifiedActionEnvelope(globals.state);
+  if (isUnifiedController(globals.state)) {
+    if (unifiedEnvelope === null) {
+      return;
+    }
+    replay.exit();
+    hideArrowsAndDisableDragging();
+    showWaitingOnServerAnimation();
+    globals.lobby.conn!.send("action", {
+      tableID: globals.lobby.tableID,
+      ...clientAction,
+      ...unifiedEnvelope,
+    });
     return;
   }
 

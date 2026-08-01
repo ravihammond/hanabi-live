@@ -26,9 +26,21 @@ func commandTableTerminate(ctx context.Context, s *Session, d *CommandData) {
 	// Validate that they are in the game
 	playerIndex := t.GetPlayerIndexFromID(s.UserID)
 	if playerIndex == -1 {
-		s.Warning("You are not playing at table " + strconv.FormatUint(t.ID, 10) + ", " +
-			"so you cannot terminate it.")
-		return
+		controller, unified := t.researchUnifiedControllerForSession(s)
+		if !unified {
+			if _, registered := t.researchUnifiedController(s.UserID); registered {
+				s.Warning("This session is no longer the active unified connection.")
+				return
+			}
+			s.Warning("You are not playing at table " + strconv.FormatUint(t.ID, 10) + ", " +
+				"so you cannot terminate it.")
+			return
+		}
+		if !researchUnifiedCapabilities(t, controller).CanTerminate {
+			s.Warning("The unified controller cannot terminate this game.")
+			return
+		}
+		playerIndex = controller.ViewedSeat
 	}
 
 	// Validate that the game has started
@@ -47,11 +59,13 @@ func commandTableTerminate(ctx context.Context, s *Session, d *CommandData) {
 }
 
 func terminate(ctx context.Context, s *Session, d *CommandData, t *Table, playerIndex int) {
+	_, unified := t.researchUnifiedControllerForSession(s)
 	commandAction(ctx, s, &CommandData{ // nolint: exhaustivestruct
-		TableID:     t.ID,
-		Type:        ActionTypeEndGame,
-		Target:      playerIndex,
-		Value:       EndConditionTerminatedByPlayer,
-		NoTableLock: true,
+		TableID:                  t.ID,
+		Type:                     ActionTypeEndGame,
+		Target:                   playerIndex,
+		Value:                    EndConditionTerminatedByPlayer,
+		NoTableLock:              true,
+		UnifiedControlAuthorized: unified,
 	})
 }

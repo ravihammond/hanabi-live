@@ -13,6 +13,7 @@ import { checkMisplay } from "./checkMisplay";
 import * as cursor from "./cursor";
 import { isOurTurn } from "./isOurTurn";
 import * as turn from "./turn";
+import { isPlayerProjection, isUnifiedController } from "./unifiedController";
 
 /** Parent of a `HanabiCard`. It has a `CardLayout` or `PlayStack` parent. */
 export class LayoutChild extends Konva.Group {
@@ -96,7 +97,9 @@ export class LayoutChild extends Konva.Group {
     return (
       // If it is not our turn, then the card should not need to be draggable yet (unless we have
       // the "Enable pre-playing cards" feature enabled).
-      (isOurTurn() || globals.lobby.settings.speedrunPreplay)
+      (isOurTurn()
+        || (globals.lobby.settings.speedrunPreplay
+          && !isUnifiedController(globals.state)))
       // Cards should not be draggable if there is a queued move.
       && globals.state.premove === null
       && !globals.options.speedrun // Cards should never be draggable while speedrunning
@@ -105,7 +108,7 @@ export class LayoutChild extends Konva.Group {
       && this.card.state.location === globals.metadata.ourPlayerIndex
       // Cards should not be draggable if we are spectating an ongoing game, in a dedicated solo
       // replay, or in a shared replay.
-      && globals.state.playing
+      && isPlayerProjection(globals.state)
       // Cards should not be draggable if they are currently playing an animation. (This function
       // will be called again upon the completion of the animation.)
       && !this.card.tweening

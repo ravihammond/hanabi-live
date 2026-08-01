@@ -70,9 +70,36 @@ func commandAction(ctx context.Context, s *Session, d *CommandData) {
 	// Validate that they are in the game
 	playerIndex := t.GetPlayerIndexFromID(s.UserID)
 	if playerIndex == -1 {
-		s.Warning("You are not playing at table " + strconv.FormatUint(t.ID, 10) + ", " +
-			"so you cannot send an action.")
-		return
+		controller, unified := t.researchUnifiedControllerForSession(s)
+		if !unified {
+			if _, registered := t.researchUnifiedController(s.UserID); registered {
+				s.Warning("This session is no longer the active unified connection.")
+				return
+			}
+			s.Warning("You are not playing at table " + strconv.FormatUint(t.ID, 10) + ", " +
+				"so you cannot send an action.")
+			return
+		}
+		if d.UnifiedControlAuthorized &&
+			(d.Type == ActionTypeEndGame || d.Type == ActionTypeEndGameByVote) {
+			playerIndex = g.ActivePlayerIndex
+		} else {
+			if d.ExpectedActorSeat == nil ||
+				d.ExpectedLiveBoundary == nil ||
+				d.ExpectedProjectionRevision == nil {
+				s.Warning("Unified actions require an expected actor, live boundary, and projection revision.")
+				return
+			}
+			liveBoundary := researchUnifiedLiveBoundary(g)
+			if *d.ExpectedActorSeat != g.ActivePlayerIndex ||
+				*d.ExpectedLiveBoundary != liveBoundary ||
+				*d.ExpectedProjectionRevision != controller.ProjectionRevision ||
+				!researchUnifiedCapabilities(t, controller).CanAct {
+				s.Warning("The unified action does not match the active projection.")
+				return
+			}
+			playerIndex = g.ActivePlayerIndex
+		}
 	}
 	p := g.Players[playerIndex]
 
@@ -200,6 +227,7 @@ func action(ctx context.Context, s *Session, d *CommandData, t *Table, p *GamePl
 
 	// Send the new turn
 	t.NotifyTurn()
+	researchFollowUnifiedTurn(t, g.ActivePlayerIndex)
 
 	if g.EndCondition == EndConditionInProgress {
 		logger.Info(t.GetName() + "It is now " + nextPlayer.Name + "'s turn.")

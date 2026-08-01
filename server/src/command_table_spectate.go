@@ -47,6 +47,10 @@ func commandTableSpectate(ctx context.Context, s *Session, d *CommandData) {
 			return
 		}
 	}
+	if _, unified := t.researchUnifiedController(s.UserID); unified && !d.UnifiedControlAuthorized {
+		s.Warning("The unified controller attachment is server-managed.")
+		return
+	}
 
 	tableSpectate(ctx, s, d, t)
 }

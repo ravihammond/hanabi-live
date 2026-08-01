@@ -1,5 +1,6 @@
 import type { NumPlayers, Options, PlayerIndex } from "@hanabi-live/game";
 import type { Tuple } from "complete-common";
+import type { UnifiedControllerInit } from "./UnifiedController";
 
 export interface InitData {
   // Game settings
@@ -35,6 +36,7 @@ export interface InitData {
   // Persistent localhost research run controls.
   readonly researchPersistentSingleGame: boolean;
   readonly researchRestartController: boolean;
+  readonly unifiedController?: UnifiedControllerInit;
   readonly hsmDebug?: {
     readonly protocolVersion: number;
     readonly capability: "own_perspective" | "switchable";

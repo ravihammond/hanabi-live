@@ -27,6 +27,19 @@ func commandGetGameInfo2(ctx context.Context, s *Session, d *CommandData) {
 		s.Warning(NotStartedFail)
 		return
 	}
+	if _, registered := t.researchUnifiedController(s.UserID); registered {
+		controller, active := t.researchUnifiedControllerForSession(s)
+		if !active {
+			s.Warning("This session is no longer the active unified connection.")
+			return
+		}
+		// Connection and clock state are shared across projections. All private and
+		// perspective-dependent state is delivered in one atomic unified envelope.
+		emitResearchUnifiedProjection(s, t, controller)
+		s.NotifyConnected(t)
+		s.NotifyTime(t)
+		return
+	}
 
 	// Validate that they are either a player or a spectator
 	playerIndex := t.GetPlayerIndexFromID(s.UserID)
@@ -36,7 +49,6 @@ func commandGetGameInfo2(ctx context.Context, s *Session, d *CommandData) {
 			strconv.FormatUint(t.ID, 10) + ", so you cannot be ready for it.")
 		return
 	}
-
 	getGameInfo2(s, t, playerIndex, spectatorIndex)
 }
 

@@ -24,8 +24,9 @@ import (
 )
 
 const (
-	researchDeckColors = 5
-	researchDeckRanks  = 5
+	researchDeckColors              = 5
+	researchDeckRanks               = 5
+	researchUnifiedManualCapability = "unified_manual_v1"
 )
 
 var (
@@ -49,11 +50,12 @@ type ResearchSeededInitialLayout struct {
 }
 
 type ResearchGamePayload struct {
-	Seed            int    `json:"seed"`
-	GameIndex       int    `json:"game_index"`
-	GameSeed        *int   `json:"game_seed"`
-	IdentityDisplay string `json:"identity_display"`
-	ChatEnabled     bool   `json:"chat_enabled"`
+	Seed             int      `json:"seed"`
+	GameIndex        int      `json:"game_index"`
+	GameSeed         *int     `json:"game_seed"`
+	IdentityDisplay  string   `json:"identity_display"`
+	SeatDisplayNames []string `json:"seat_display_names,omitempty"`
+	ChatEnabled      bool     `json:"chat_enabled"`
 }
 
 type ResearchRosterPlayer struct {
@@ -62,6 +64,7 @@ type ResearchRosterPlayer struct {
 	Type                  string                `json:"type"`
 	Location              string                `json:"location,omitempty"`
 	DisplayName           string                `json:"display_name,omitempty"`
+	RequiredSeat          *int                  `json:"required_seat,omitempty"`
 	ModelPath             string                `json:"model_path,omitempty"`
 	HSMDebugCapability    ResearchHSMCapability `json:"hsm_debug_capability,omitempty"`
 	HSMPhysicalTruthGrant bool                  `json:"hsm_physical_truth_grant,omitempty"`
@@ -74,12 +77,14 @@ type ResearchHSMDebugSpectator struct {
 }
 
 type ResearchCreatePayload struct {
-	Mode                 string                      `json:"mode"`
-	Game                 ResearchGamePayload         `json:"game"`
-	RosterPlayers        []ResearchRosterPlayer      `json:"roster_players"`
-	SeededInitialLayout  ResearchSeededInitialLayout `json:"seeded_initial_layout"`
-	HSMDebugSpectator    *ResearchHSMDebugSpectator  `json:"hsm_debug_spectator,omitempty"`
-	HSMSemanticProfileID int                         `json:"hsm_semantic_profile_id,omitempty"`
+	Mode                      string                      `json:"mode"`
+	Unified                   bool                        `json:"unified,omitempty"`
+	Game                      ResearchGamePayload         `json:"game"`
+	RosterPlayers             []ResearchRosterPlayer      `json:"roster_players"`
+	SeededInitialLayout       ResearchSeededInitialLayout `json:"seeded_initial_layout"`
+	HSMDebugSpectator         *ResearchHSMDebugSpectator  `json:"hsm_debug_spectator,omitempty"`
+	HSMSemanticProfileID      int                         `json:"hsm_semantic_profile_id,omitempty"`
+	ControllerSeatAssignments map[string]string           `json:"controller_seat_assignments,omitempty"`
 }
 
 type CreatedResearchSingleGame struct {
@@ -90,6 +95,8 @@ type CreatedResearchSingleGame struct {
 	LayoutSource           string            `json:"layout_source"`
 	SeatOrder              []int             `json:"seat_order"`
 	JoinLinks              map[string]string `json:"join_links"`
+	UnifiedJoinLink        string            `json:"unified_join_link,omitempty"`
+	Capabilities           []string          `json:"capabilities,omitempty"`
 	HSMArchiveGenerationID uint32            `json:"hsm_archive_generation_id"`
 }
 
@@ -134,12 +141,14 @@ type ResearchSession struct {
 	RosterPlayerToSeatID            map[string]string
 	RosterPlayerIDsBySeat           []string
 	RosterPlayerNamesBySeat         []string
+	ControllerRosterPlayerIDsBySeat []string
 	BotRosterPlayerIDs              map[string]bool
 	RestartControllerUserID         int
 	PendingRestartRequest           *ResearchRestartRequest
 	NextRestartRequestID            int
 	RosterPlayers                   []ResearchRosterPlayer
 	IdentityDisplay                 string
+	SeatDisplayNames                []string
 	PendingHSMSnapshotRequests      map[int]*ResearchHSMSnapshotRequest
 	NextHSMSnapshotRequestID        int
 	PendingHSMPhysicalTruthRequests map[int]*ResearchHSMPhysicalTruthRequest
@@ -149,8 +158,93 @@ type ResearchSession struct {
 	HSMLegalProjectionsByBoundary   map[int]ResearchHSMLegalProjection
 	HSMActorsByBoundary             map[int]int
 	HSMSemanticProfileID            int
-	HSMDeliveryMutex                sync.Mutex
-	HSMMutex                        sync.Mutex
+	// LifecycleMutex protects the mutable run/layout fields above. It must never be
+	// held while acquiring or holding a table mutex or researchSessionsMutex.
+	LifecycleMutex              sync.Mutex
+	LifecycleMutationInProgress bool
+	HSMDeliveryMutex            sync.Mutex
+	HSMMutex                    sync.Mutex
+}
+
+type researchSessionLifecycleSnapshot struct {
+	GameID                          string
+	TableID                         uint64
+	Mode                            string
+	Seed                            int
+	CurrentGameIndex                int
+	ReadyStatus                     map[string]bool
+	CompletedGames                  []map[string]interface{}
+	SeatOrder                       []int
+	RosterPlayerToSeatID            map[string]string
+	RosterPlayerIDsBySeat           []string
+	RosterPlayerNamesBySeat         []string
+	ControllerRosterPlayerIDsBySeat []string
+	BotRosterPlayerIDs              map[string]bool
+	RestartControllerUserID         int
+	PendingRestartRequest           *ResearchRestartRequest
+	NextRestartRequestID            int
+	RosterPlayers                   []ResearchRosterPlayer
+	IdentityDisplay                 string
+	SeatDisplayNames                []string
+	MutationInProgress              bool
+}
+
+func (session *ResearchSession) lifecycleSnapshot() researchSessionLifecycleSnapshot {
+	session.LifecycleMutex.Lock()
+	defer session.LifecycleMutex.Unlock()
+
+	var pendingRestartRequest *ResearchRestartRequest
+	if session.PendingRestartRequest != nil {
+		requestCopy := *session.PendingRestartRequest
+		pendingRestartRequest = &requestCopy
+	}
+	readyStatus := make(map[string]bool, len(session.ReadyStatus))
+	for playerID, ready := range session.ReadyStatus {
+		readyStatus[playerID] = ready
+	}
+	botRosterPlayerIDs := make(map[string]bool, len(session.BotRosterPlayerIDs))
+	for playerID, bot := range session.BotRosterPlayerIDs {
+		botRosterPlayerIDs[playerID] = bot
+	}
+
+	return researchSessionLifecycleSnapshot{
+		GameID:                          session.GameID,
+		TableID:                         session.TableID,
+		Mode:                            session.Mode,
+		Seed:                            session.Seed,
+		CurrentGameIndex:                session.CurrentGameIndex,
+		ReadyStatus:                     readyStatus,
+		CompletedGames:                  append([]map[string]interface{}(nil), session.CompletedGames...),
+		SeatOrder:                       append([]int(nil), session.SeatOrder...),
+		RosterPlayerToSeatID:            copyStringMap(session.RosterPlayerToSeatID),
+		RosterPlayerIDsBySeat:           append([]string(nil), session.RosterPlayerIDsBySeat...),
+		RosterPlayerNamesBySeat:         append([]string(nil), session.RosterPlayerNamesBySeat...),
+		ControllerRosterPlayerIDsBySeat: append([]string(nil), session.ControllerRosterPlayerIDsBySeat...),
+		BotRosterPlayerIDs:              botRosterPlayerIDs,
+		RestartControllerUserID:         session.RestartControllerUserID,
+		PendingRestartRequest:           pendingRestartRequest,
+		NextRestartRequestID:            session.NextRestartRequestID,
+		RosterPlayers:                   append([]ResearchRosterPlayer(nil), session.RosterPlayers...),
+		IdentityDisplay:                 session.IdentityDisplay,
+		SeatDisplayNames:                append([]string(nil), session.SeatDisplayNames...),
+		MutationInProgress:              session.LifecycleMutationInProgress,
+	}
+}
+
+func (session *ResearchSession) tryBeginLifecycleMutation() bool {
+	session.LifecycleMutex.Lock()
+	defer session.LifecycleMutex.Unlock()
+	if session.LifecycleMutationInProgress {
+		return false
+	}
+	session.LifecycleMutationInProgress = true
+	return true
+}
+
+func (session *ResearchSession) endLifecycleMutation() {
+	session.LifecycleMutex.Lock()
+	session.LifecycleMutationInProgress = false
+	session.LifecycleMutex.Unlock()
 }
 
 type ResearchRestartRequest struct {
@@ -172,6 +266,7 @@ type ResearchJoinToken struct {
 	HSMViewerKind         ResearchHSMViewerKind
 	HSMDebugCapability    ResearchHSMCapability
 	HSMPhysicalTruthGrant bool
+	Unified               bool
 }
 
 type ResearchHSMSnapshotRequest struct {
@@ -352,9 +447,30 @@ func researchCreateSingleGame(c *gin.Context) {
 	gameSeed := researchGameSeed(payload.Game)
 	gameID := fmt.Sprintf("single_game_%d", gameSeed)
 	rosterPlayerIDsBySeat := researchRosterPlayerIDsBySeat(payload.RosterPlayers, layout.seatOrder)
-	rosterPlayerNamesBySeat := researchRosterPlayerNamesBySeat(payload.RosterPlayers, layout.seatOrder, payload.Game.IdentityDisplay)
+	rosterPlayerNamesBySeat := researchRosterPlayerNamesBySeat(payload.RosterPlayers, layout.seatOrder, payload.Game)
+	controllerRosterPlayerIDsBySeat := researchControllerRosterPlayerIDsBySeat(payload, layout)
 	botRosterPlayerIDs := researchBotRosterPlayerIDs(payload.RosterPlayers)
-	joinLinks := researchRegisterJoinLinks(gameID, table.ID, payload, layout)
+	joinLinks := make(map[string]string)
+	unifiedJoinLink := ""
+	if payload.Unified {
+		var unifiedJoin *ResearchJoinToken
+		unifiedJoinLink, unifiedJoin = researchRegisterUnifiedJoinLink(
+			gameID,
+			table.ID,
+			len(payload.RosterPlayers),
+		)
+		table.Lock(nil)
+		table.ResearchUnifiedController = &ResearchUnifiedController{
+			UserID:             unifiedJoin.UserID,
+			ViewedSeat:         0,
+			SelectedBoundary:   0,
+			ProjectionRevision: 1,
+			Initialized:        false,
+		}
+		table.Unlock(nil)
+	} else {
+		joinLinks = researchRegisterJoinLinks(gameID, table.ID, payload, layout)
+	}
 	created := CreatedResearchSingleGame{
 		TableID:                table.ID,
 		GameID:                 gameID,
@@ -363,7 +479,11 @@ func researchCreateSingleGame(c *gin.Context) {
 		LayoutSource:           "payload",
 		SeatOrder:              append([]int(nil), layout.seatOrder...),
 		JoinLinks:              joinLinks,
+		UnifiedJoinLink:        unifiedJoinLink,
 		HSMArchiveGenerationID: 1,
+	}
+	if payload.Unified {
+		created.Capabilities = []string{researchUnifiedManualCapability}
 	}
 	researchSessionsMutex.Lock()
 	researchSessions[gameID] = &ResearchSession{
@@ -374,12 +494,14 @@ func researchCreateSingleGame(c *gin.Context) {
 		RosterPlayerToSeatID:            copyStringMap(layout.rosterPlayerToSeatID),
 		RosterPlayerIDsBySeat:           rosterPlayerIDsBySeat,
 		RosterPlayerNamesBySeat:         rosterPlayerNamesBySeat,
+		ControllerRosterPlayerIDsBySeat: controllerRosterPlayerIDsBySeat,
 		BotRosterPlayerIDs:              botRosterPlayerIDs,
 		Seed:                            payload.Game.Seed,
 		CurrentGameIndex:                payload.Game.GameIndex,
 		RestartControllerUserID:         researchRestartControllerUserID(table, payload, layout),
 		RosterPlayers:                   append([]ResearchRosterPlayer(nil), payload.RosterPlayers...),
 		IdentityDisplay:                 payload.Game.IdentityDisplay,
+		SeatDisplayNames:                append([]string(nil), payload.Game.SeatDisplayNames...),
 		PendingHSMSnapshotRequests:      make(map[int]*ResearchHSMSnapshotRequest),
 		PendingHSMPhysicalTruthRequests: make(map[int]*ResearchHSMPhysicalTruthRequest),
 		HSMArchiveGenerationID:          1,
@@ -416,7 +538,8 @@ func researchCreatePregameTable(c *gin.Context) {
 		return
 	}
 	rosterPlayerIDsBySeat := researchRosterPlayerIDsBySeat(payload.RosterPlayers, layout.seatOrder)
-	rosterPlayerNamesBySeat := researchRosterPlayerNamesBySeat(payload.RosterPlayers, layout.seatOrder, payload.Game.IdentityDisplay)
+	rosterPlayerNamesBySeat := researchRosterPlayerNamesBySeat(payload.RosterPlayers, layout.seatOrder, payload.Game)
+	controllerRosterPlayerIDsBySeat := researchControllerRosterPlayerIDsBySeat(payload, layout)
 	botRosterPlayerIDs := researchBotRosterPlayerIDs(payload.RosterPlayers)
 	table, err := createResearchSingleGameTable(payload, layout)
 	if err != nil {
@@ -441,19 +564,23 @@ func researchCreatePregameTable(c *gin.Context) {
 
 	researchSessionsMutex.Lock()
 	researchSessions[tableID] = &ResearchSession{
-		GameID:                     tableID,
-		TableID:                    table.ID,
-		Mode:                       "pregame_table",
-		Seed:                       payload.Game.Seed,
-		CurrentGameIndex:           0,
-		ReadyStatus:                readyStatus,
-		CompletedGames:             make([]map[string]interface{}, 0),
-		SeatOrder:                  append([]int(nil), layout.seatOrder...),
-		RosterPlayerToSeatID:       copyStringMap(layout.rosterPlayerToSeatID),
-		RosterPlayerIDsBySeat:      rosterPlayerIDsBySeat,
-		RosterPlayerNamesBySeat:    rosterPlayerNamesBySeat,
-		BotRosterPlayerIDs:         botRosterPlayerIDs,
-		PendingHSMSnapshotRequests: make(map[int]*ResearchHSMSnapshotRequest),
+		GameID:                          tableID,
+		TableID:                         table.ID,
+		Mode:                            "pregame_table",
+		Seed:                            payload.Game.Seed,
+		CurrentGameIndex:                0,
+		ReadyStatus:                     readyStatus,
+		CompletedGames:                  make([]map[string]interface{}, 0),
+		SeatOrder:                       append([]int(nil), layout.seatOrder...),
+		RosterPlayerToSeatID:            copyStringMap(layout.rosterPlayerToSeatID),
+		RosterPlayerIDsBySeat:           rosterPlayerIDsBySeat,
+		RosterPlayerNamesBySeat:         rosterPlayerNamesBySeat,
+		ControllerRosterPlayerIDsBySeat: controllerRosterPlayerIDsBySeat,
+		BotRosterPlayerIDs:              botRosterPlayerIDs,
+		RosterPlayers:                   append([]ResearchRosterPlayer(nil), payload.RosterPlayers...),
+		IdentityDisplay:                 payload.Game.IdentityDisplay,
+		SeatDisplayNames:                append([]string(nil), payload.Game.SeatDisplayNames...),
+		PendingHSMSnapshotRequests:      make(map[int]*ResearchHSMSnapshotRequest),
 		PendingHSMPhysicalTruthRequests: make(
 			map[int]*ResearchHSMPhysicalTruthRequest,
 		),
@@ -517,9 +644,10 @@ func researchUpdateCurrentGameLayout(c *gin.Context) {
 
 	gameID := c.Param("gameID")
 	var payload struct {
-		GameIndex           int                         `json:"game_index"`
-		GameSeed            *int                        `json:"game_seed"`
-		SeededInitialLayout ResearchSeededInitialLayout `json:"seeded_initial_layout"`
+		GameIndex                 int                         `json:"game_index"`
+		GameSeed                  *int                        `json:"game_seed"`
+		SeededInitialLayout       ResearchSeededInitialLayout `json:"seeded_initial_layout"`
+		ControllerSeatAssignments map[string]string           `json:"controller_seat_assignments,omitempty"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
@@ -533,29 +661,74 @@ func researchUpdateCurrentGameLayout(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"detail": "Session is not valid."})
 		return
 	}
-	if session.Mode != "pregame_table" {
+	if !session.tryBeginLifecycleMutation() {
+		c.JSON(http.StatusConflict, gin.H{"detail": "Another research lifecycle mutation is already in progress."})
+		return
+	}
+	mutationInProgress := true
+	defer func() {
+		if mutationInProgress {
+			session.endLifecycleMutation()
+		}
+	}()
+	lifecycle := session.lifecycleSnapshot()
+	if lifecycle.Mode != "pregame_table" {
 		c.JSON(http.StatusConflict, gin.H{"detail": "Session is not a Pregame Table."})
 		return
 	}
-	if payload.GameIndex != session.CurrentGameIndex {
+	if payload.GameIndex != lifecycle.CurrentGameIndex {
 		c.JSON(http.StatusConflict, gin.H{"detail": "Pregame Table layout game_index must match current game index."})
 		return
 	}
-	if payload.GameSeed == nil || *payload.GameSeed != session.Seed+session.CurrentGameIndex {
+	if payload.GameSeed == nil || *payload.GameSeed != lifecycle.Seed+lifecycle.CurrentGameIndex {
 		c.JSON(http.StatusConflict, gin.H{"detail": "Pregame Table layout game_seed must match seed + game_index."})
 		return
 	}
-	layout, err := validateResearchLayout(payload.SeededInitialLayout, len(session.SeatOrder))
+	layout, err := validateResearchLayout(payload.SeededInitialLayout, len(lifecycle.SeatOrder))
 	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
 		return
 	}
+	gameConfig := ResearchCreatePayload{
+		Game: ResearchGamePayload{
+			IdentityDisplay:  lifecycle.IdentityDisplay,
+			SeatDisplayNames: lifecycle.SeatDisplayNames,
+		},
+		RosterPlayers:             lifecycle.RosterPlayers,
+		ControllerSeatAssignments: payload.ControllerSeatAssignments,
+	}
+	if err := validateResearchSeatPresentationAndControllers(gameConfig, layout); err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
+		return
+	}
+	controllerIDsBySeat := researchControllerRosterPlayerIDsBySeat(gameConfig, layout)
+	table, ok := tables.Get(lifecycle.TableID, true)
+	if !ok {
+		c.JSON(http.StatusConflict, gin.H{"detail": "Pregame Table no longer exists."})
+		return
+	}
 
-	researchSessionsMutex.Lock()
+	table.Lock(nil)
+	if err := researchApplyRestartLayout(table, lifecycle, layout, *payload.GameSeed, controllerIDsBySeat); err != nil {
+		table.Unlock(nil)
+		c.JSON(http.StatusConflict, gin.H{"detail": err.Error()})
+		return
+	}
+	table.Unlock(nil)
+
+	nextRosterPlayerIDsBySeat := researchRosterPlayerIDsBySeat(lifecycle.RosterPlayers, layout.seatOrder)
+	nextRosterPlayerNamesBySeat := researchRosterPlayerNamesBySeat(lifecycle.RosterPlayers, layout.seatOrder, gameConfig.Game)
+	session.LifecycleMutex.Lock()
 	session.SeatOrder = append([]int(nil), layout.seatOrder...)
 	session.RosterPlayerToSeatID = copyStringMap(layout.rosterPlayerToSeatID)
+	session.RosterPlayerIDsBySeat = nextRosterPlayerIDsBySeat
+	session.RosterPlayerNamesBySeat = nextRosterPlayerNamesBySeat
+	session.ControllerRosterPlayerIDsBySeat = append([]string(nil), controllerIDsBySeat...)
+	session.LifecycleMutex.Unlock()
+	researchUpdateJoinTokensForLayout(session.lifecycleSnapshot())
+	session.endLifecycleMutation()
+	mutationInProgress = false
 	status := researchSessionStatus(session)
-	researchSessionsMutex.Unlock()
 	c.JSON(http.StatusOK, status)
 }
 
@@ -565,10 +738,11 @@ func researchRestartSingleGame(c *gin.Context) {
 	}
 
 	var payload struct {
-		RequestID           int                         `json:"request_id"`
-		GameIndex           int                         `json:"game_index"`
-		GameSeed            *int                        `json:"game_seed"`
-		SeededInitialLayout ResearchSeededInitialLayout `json:"seeded_initial_layout"`
+		RequestID                 int                         `json:"request_id"`
+		GameIndex                 int                         `json:"game_index"`
+		GameSeed                  *int                        `json:"game_seed"`
+		SeededInitialLayout       ResearchSeededInitialLayout `json:"seeded_initial_layout"`
+		ControllerSeatAssignments map[string]string           `json:"controller_seat_assignments,omitempty"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
@@ -578,70 +752,76 @@ func researchRestartSingleGame(c *gin.Context) {
 	gameID := c.Param("gameID")
 	researchSessionsMutex.Lock()
 	session, ok := researchSessions[gameID]
+	researchSessionsMutex.Unlock()
 	if !ok {
-		researchSessionsMutex.Unlock()
 		c.JSON(http.StatusNotFound, gin.H{"detail": "Session is not valid."})
 		return
 	}
-	if session.Mode != "single_game" {
-		researchSessionsMutex.Unlock()
+	if !session.tryBeginLifecycleMutation() {
+		c.JSON(http.StatusConflict, gin.H{"detail": "Another research lifecycle mutation is already in progress."})
+		return
+	}
+	mutationInProgress := true
+	defer func() {
+		if mutationInProgress {
+			session.endLifecycleMutation()
+		}
+	}()
+	lifecycle := session.lifecycleSnapshot()
+	if lifecycle.Mode != "single_game" {
 		c.JSON(http.StatusConflict, gin.H{"detail": "Session is not a persistent Single Game run."})
 		return
 	}
-	request := session.PendingRestartRequest
+	request := lifecycle.PendingRestartRequest
 	if request == nil || request.RequestID != payload.RequestID {
-		researchSessionsMutex.Unlock()
 		c.JSON(http.StatusConflict, gin.H{"detail": "Restart request is not pending."})
 		return
 	}
 
-	expectedGameIndex := session.CurrentGameIndex
+	expectedGameIndex := lifecycle.CurrentGameIndex
 	if request.Kind == researchRestartNextGame {
 		expectedGameIndex++
 	}
-	expectedGameSeed := session.Seed + expectedGameIndex
+	expectedGameSeed := lifecycle.Seed + expectedGameIndex
 	if payload.GameIndex != expectedGameIndex {
-		researchSessionsMutex.Unlock()
 		c.JSON(http.StatusConflict, gin.H{"detail": "Restart game_index does not match the requested transition."})
 		return
 	}
 	if payload.GameSeed == nil || *payload.GameSeed != expectedGameSeed {
-		researchSessionsMutex.Unlock()
 		c.JSON(http.StatusConflict, gin.H{"detail": "Restart game_seed must equal seed + game_index."})
 		return
 	}
-	layout, err := validateResearchLayout(payload.SeededInitialLayout, len(session.RosterPlayers))
+	layout, err := validateResearchLayout(payload.SeededInitialLayout, len(lifecycle.RosterPlayers))
 	if err != nil {
-		researchSessionsMutex.Unlock()
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
 		return
 	}
+	restartConfig := ResearchCreatePayload{
+		Game: ResearchGamePayload{
+			IdentityDisplay:  lifecycle.IdentityDisplay,
+			SeatDisplayNames: lifecycle.SeatDisplayNames,
+		},
+		RosterPlayers:             lifecycle.RosterPlayers,
+		ControllerSeatAssignments: payload.ControllerSeatAssignments,
+	}
+	if err := validateResearchSeatPresentationAndControllers(restartConfig, layout); err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
+		return
+	}
+	nextControllerRosterPlayerIDsBySeat := researchControllerRosterPlayerIDsBySeat(restartConfig, layout)
 
 	ctx := context.Background()
-	table, ok := tables.Get(session.TableID, true)
+	table, ok := tables.Get(lifecycle.TableID, true)
 	if !ok {
-		researchSessionsMutex.Unlock()
 		c.JSON(http.StatusConflict, gin.H{"detail": "Single Game table no longer exists."})
 		return
 	}
 	table.Lock(ctx)
-	if err := researchApplyRestartLayout(table, session, layout, expectedGameSeed); err != nil {
+	if err := researchApplyRestartLayout(table, lifecycle, layout, expectedGameSeed, nextControllerRosterPlayerIDsBySeat); err != nil {
 		table.Unlock(ctx)
-		researchSessionsMutex.Unlock()
 		c.JSON(http.StatusConflict, gin.H{"detail": err.Error()})
 		return
 	}
-	session.CurrentGameIndex = expectedGameIndex
-	session.SeatOrder = append([]int(nil), layout.seatOrder...)
-	session.RosterPlayerToSeatID = copyStringMap(layout.rosterPlayerToSeatID)
-	session.RosterPlayerIDsBySeat = researchRosterPlayerIDsBySeat(session.RosterPlayers, layout.seatOrder)
-	session.RosterPlayerNamesBySeat = researchRosterPlayerNamesBySeat(
-		session.RosterPlayers,
-		layout.seatOrder,
-		session.IdentityDisplay,
-	)
-	researchUpdateJoinTokensForLayout(session)
-	session.PendingRestartRequest = nil
 	session.HSMDeliveryMutex.Lock()
 	session.HSMMutex.Lock()
 	session.HSMArchiveGenerationID++
@@ -658,35 +838,65 @@ func researchRestartSingleGame(c *gin.Context) {
 		NoTableLock:  true,
 		NoTablesLock: true,
 	}, table)
+	if controller := table.ResearchUnifiedController; controller != nil {
+		controller.ViewedSeat = table.Game.ActivePlayerIndex
+		controller.SelectedBoundary = researchUnifiedLiveBoundary(table.Game)
+		controller.ActionCutoffs = []int{len(table.Game.Actions)}
+		controller.Initialized = true
+		if spectatorIndex := table.GetSpectatorIndexFromID(controller.UserID); spectatorIndex >= 0 {
+			spectator := table.Spectators[spectatorIndex]
+			spectator.ShadowingPlayerIndex = controller.ViewedSeat
+			spectator.ShadowingPlayerUsername = table.Players[controller.ViewedSeat].Name
+		}
+		reviseResearchUnifiedProjection(table)
+	}
 	table.Unlock(ctx)
-	researchSessionsMutex.Unlock()
+
+	nextRosterPlayerIDsBySeat := researchRosterPlayerIDsBySeat(lifecycle.RosterPlayers, layout.seatOrder)
+	nextRosterPlayerNamesBySeat := researchRosterPlayerNamesBySeat(
+		lifecycle.RosterPlayers,
+		layout.seatOrder,
+		ResearchGamePayload{IdentityDisplay: lifecycle.IdentityDisplay, SeatDisplayNames: lifecycle.SeatDisplayNames},
+	)
+	session.LifecycleMutex.Lock()
+	session.CurrentGameIndex = expectedGameIndex
+	session.SeatOrder = append([]int(nil), layout.seatOrder...)
+	session.RosterPlayerToSeatID = copyStringMap(layout.rosterPlayerToSeatID)
+	session.RosterPlayerIDsBySeat = nextRosterPlayerIDsBySeat
+	session.RosterPlayerNamesBySeat = nextRosterPlayerNamesBySeat
+	session.ControllerRosterPlayerIDsBySeat = append([]string(nil), nextControllerRosterPlayerIDsBySeat...)
+	session.PendingRestartRequest = nil
+	session.LifecycleMutex.Unlock()
+	researchUpdateJoinTokensForLayout(session.lifecycleSnapshot())
+	session.endLifecycleMutation()
+	mutationInProgress = false
 
 	c.JSON(http.StatusOK, researchSessionStatus(session))
 }
 
 func researchApplyRestartLayout(
 	table *Table,
-	session *ResearchSession,
+	session researchSessionLifecycleSnapshot,
 	layout *validatedResearchLayout,
 	gameSeed int,
+	nextControllerRosterPlayerIDsBySeat []string,
 ) error {
-	playersByRosterPlayerID := make(map[string]*Player, len(table.Players))
-	for seatIndex, rosterPlayerID := range session.RosterPlayerIDsBySeat {
+	playersByControllerID := make(map[string]*Player, len(table.Players))
+	for seatIndex, controllerID := range session.ControllerRosterPlayerIDsBySeat {
 		if seatIndex < len(table.Players) {
-			playersByRosterPlayerID[rosterPlayerID] = table.Players[seatIndex]
+			playersByControllerID[controllerID] = table.Players[seatIndex]
 		}
 	}
-	rosterPlayerIDsBySeat := researchRosterPlayerIDsBySeat(session.RosterPlayers, layout.seatOrder)
 	rosterPlayerNamesBySeat := researchRosterPlayerNamesBySeat(
 		session.RosterPlayers,
 		layout.seatOrder,
-		session.IdentityDisplay,
+		ResearchGamePayload{IdentityDisplay: session.IdentityDisplay, SeatDisplayNames: session.SeatDisplayNames},
 	)
-	nextPlayers := make([]*Player, len(rosterPlayerIDsBySeat))
-	for seatIndex, rosterPlayerID := range rosterPlayerIDsBySeat {
-		player, ok := playersByRosterPlayerID[rosterPlayerID]
+	nextPlayers := make([]*Player, len(nextControllerRosterPlayerIDsBySeat))
+	for seatIndex, controllerID := range nextControllerRosterPlayerIDsBySeat {
+		player, ok := playersByControllerID[controllerID]
 		if !ok {
-			return fmt.Errorf("Roster Player %q is not assigned to the current table.", rosterPlayerID)
+			return fmt.Errorf("Controller %q is not assigned to the current table.", controllerID)
 		}
 		player.Name = rosterPlayerNamesBySeat[seatIndex]
 		if player.Session != nil {
@@ -706,17 +916,20 @@ func researchApplyRestartLayout(
 	return nil
 }
 
-func researchUpdateJoinTokensForLayout(session *ResearchSession) {
+func researchUpdateJoinTokensForLayout(session researchSessionLifecycleSnapshot) {
+	researchSessionsMutex.Lock()
+	defer researchSessionsMutex.Unlock()
 	for _, join := range researchJoinTokens {
 		if join.GameID != session.GameID {
 			continue
 		}
-		for seatIndex, rosterPlayerID := range session.RosterPlayerIDsBySeat {
-			if rosterPlayerID != join.RosterPlayerID {
+		for seatIndex, controllerID := range session.ControllerRosterPlayerIDsBySeat {
+			if controllerID != join.RosterPlayerID {
 				continue
 			}
 			join.SeatIndex = seatIndex
 			join.Username = session.RosterPlayerNamesBySeat[seatIndex]
+			join.HSMIdentity = session.RosterPlayerIDsBySeat[seatIndex]
 			break
 		}
 	}
@@ -834,6 +1047,12 @@ func researchPublishHSMSnapshotFailure(c *gin.Context) {
 		session.HSMMutex.Unlock()
 		researchSessionsMutex.Unlock()
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "HSM snapshot failure error is required."})
+		return
+	}
+	if err := publication.Failure.validateForRequest(request); err != nil {
+		session.HSMMutex.Unlock()
+		researchSessionsMutex.Unlock()
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": err.Error()})
 		return
 	}
 	if request.DeliveryInProgress {
@@ -1135,55 +1354,60 @@ func researchCreateBotJoinSession(c *gin.Context) {
 	gameID := c.Param("gameID")
 	researchSessionsMutex.Lock()
 	session, ok := researchSessions[gameID]
+	researchSessionsMutex.Unlock()
 	if !ok {
-		researchSessionsMutex.Unlock()
 		c.JSON(http.StatusNotFound, gin.H{"detail": "Research session is not valid."})
 		return
 	}
-	if !session.BotRosterPlayerIDs[payload.RosterPlayerID] {
-		researchSessionsMutex.Unlock()
+	lifecycle := session.lifecycleSnapshot()
+	if lifecycle.MutationInProgress {
+		c.JSON(http.StatusConflict, gin.H{"detail": "A research lifecycle mutation is in progress."})
+		return
+	}
+	if !lifecycle.BotRosterPlayerIDs[payload.RosterPlayerID] {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "Research Bot Join Sessions can only be minted for bot Roster Players."})
 		return
 	}
 
 	seatIndex := -1
-	for index, rosterPlayerID := range session.RosterPlayerIDsBySeat {
-		if rosterPlayerID == payload.RosterPlayerID {
+	for index, controllerID := range lifecycle.ControllerRosterPlayerIDsBySeat {
+		if controllerID == payload.RosterPlayerID {
 			seatIndex = index
 			break
 		}
 	}
 	if seatIndex < 0 {
-		researchSessionsMutex.Unlock()
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "Bot Roster Player is not assigned to a seat."})
 		return
 	}
 
 	rosterIndex := 0
-	if seatIndex < len(session.SeatOrder) {
-		rosterIndex = session.SeatOrder[seatIndex]
+	if seatIndex < len(lifecycle.SeatOrder) {
+		rosterIndex = lifecycle.SeatOrder[seatIndex]
 	}
 	username := payload.RosterPlayerID
-	if seatIndex < len(session.RosterPlayerNamesBySeat) && session.RosterPlayerNamesBySeat[seatIndex] != "" {
-		username = session.RosterPlayerNamesBySeat[seatIndex]
+	if seatIndex < len(lifecycle.RosterPlayerNamesBySeat) && lifecycle.RosterPlayerNamesBySeat[seatIndex] != "" {
+		username = lifecycle.RosterPlayerNamesBySeat[seatIndex]
 	}
+	researchSessionsMutex.Lock()
 	token := researchNewJoinToken()
 	join := &ResearchJoinToken{
 		Token:          token,
-		GameID:         session.GameID,
-		TableID:        session.TableID,
+		GameID:         lifecycle.GameID,
+		TableID:        lifecycle.TableID,
 		RosterPlayerID: payload.RosterPlayerID,
 		RosterIndex:    rosterIndex,
 		SeatIndex:      seatIndex,
-		UserID:         researchUserIDForTableSeat(session.TableID, seatIndex),
+		UserID:         researchUserIDForTableSeat(lifecycle.TableID, seatIndex),
 		Username:       username,
+		HSMIdentity:    lifecycle.RosterPlayerIDsBySeat[seatIndex],
 	}
 	researchJoinTokens[token] = join
 	researchGuestUsers[join.UserID] = join
 	researchSessionsMutex.Unlock()
 
 	c.JSON(http.StatusCreated, CreatedResearchBotJoinSession{
-		GameID:         session.GameID,
+		GameID:         lifecycle.GameID,
 		RosterPlayerID: payload.RosterPlayerID,
 		JoinCredential: token,
 		ServerURL:      researchPublicBaseURL(),
@@ -1206,13 +1430,18 @@ func researchPostBotAction(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
 		return
 	}
-	if !session.BotRosterPlayerIDs[payload.RosterPlayerID] {
+	lifecycle := session.lifecycleSnapshot()
+	if lifecycle.MutationInProgress {
+		c.JSON(http.StatusConflict, gin.H{"detail": "A research lifecycle mutation is in progress."})
+		return
+	}
+	if !lifecycle.BotRosterPlayerIDs[payload.RosterPlayerID] {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"detail": "Bot action roster_player_id is not a bot Roster Player."})
 		return
 	}
 
 	ctx := context.Background()
-	table, exists := getTableAndLock(ctx, nil, session.TableID, true, true)
+	table, exists := getTableAndLock(ctx, nil, lifecycle.TableID, true, true)
 	if !exists {
 		c.JSON(http.StatusNotFound, gin.H{"detail": "Research table is not valid."})
 		return
@@ -1228,8 +1457,8 @@ func researchPostBotAction(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"detail": "Research game has already completed."})
 		return
 	}
-	currentRosterPlayerID := session.RosterPlayerIDsBySeat[game.ActivePlayerIndex]
-	if payload.RosterPlayerID != currentRosterPlayerID {
+	currentControllerID := lifecycle.ControllerRosterPlayerIDsBySeat[game.ActivePlayerIndex]
+	if payload.RosterPlayerID != currentControllerID {
 		table.Unlock(ctx)
 		c.JSON(http.StatusConflict, gin.H{"detail": "It is not this bot Roster Player's turn."})
 		return
@@ -1279,7 +1508,9 @@ func researchMagicJoin(c *gin.Context) {
 
 	joinQuery := url.QueryEscape(token)
 	path := fmt.Sprintf("/pre-game/%d?researchMagicJoin=%s", join.TableID, joinQuery)
-	if table, ok := tables.Get(join.TableID, true); ok {
+	if join.Unified {
+		path = fmt.Sprintf("/unified-game/%d?researchMagicJoin=%s", join.TableID, joinQuery)
+	} else if table, ok := tables.Get(join.TableID, true); ok {
 		table.Lock(context.Background())
 		if table.Running {
 			path = fmt.Sprintf("/game/%d?researchMagicJoin=%s", join.TableID, joinQuery)
@@ -1401,7 +1632,60 @@ func validateResearchPayload(payload ResearchCreatePayload) (*validatedResearchL
 	if payload.Game.GameSeed == nil && payload.Mode == "single_game" {
 		return nil, fmt.Errorf("Payload must include game.game_seed metadata.")
 	}
-	return validateResearchLayout(payload.SeededInitialLayout, len(payload.RosterPlayers))
+	if payload.Unified {
+		if payload.Mode != "single_game" {
+			return nil, fmt.Errorf("unified mode requires a single_game session.")
+		}
+		for _, player := range payload.RosterPlayers {
+			if player.Type != "human" || player.Location != "local" {
+				return nil, fmt.Errorf("unified mode requires every Roster Player to be a local human.")
+			}
+		}
+	}
+	layout, err := validateResearchLayout(payload.SeededInitialLayout, len(payload.RosterPlayers))
+	if err != nil {
+		return nil, err
+	}
+	if err := validateResearchSeatPresentationAndControllers(payload, layout); err != nil {
+		return nil, err
+	}
+	return layout, nil
+}
+
+func validateResearchSeatPresentationAndControllers(payload ResearchCreatePayload, layout *validatedResearchLayout) error {
+	if payload.Game.IdentityDisplay == "seat_names" {
+		if len(payload.Game.SeatDisplayNames) != len(payload.RosterPlayers) {
+			return fmt.Errorf("seat_display_names must contain exactly one name per physical seat.")
+		}
+		for _, name := range payload.Game.SeatDisplayNames {
+			if strings.TrimSpace(name) == "" {
+				return fmt.Errorf("seat_display_names must contain non-empty names.")
+			}
+		}
+	} else if len(payload.Game.SeatDisplayNames) != 0 {
+		return fmt.Errorf("seat_display_names requires identity_display seat_names.")
+	}
+
+	assignments := researchResolvedControllerSeatAssignments(payload, layout)
+	if len(assignments) != len(payload.RosterPlayers) {
+		return fmt.Errorf("controller_seat_assignments must assign every configured controller.")
+	}
+	seenSeats := make(map[string]bool)
+	for _, player := range payload.RosterPlayers {
+		seatID, ok := assignments[player.RosterPlayerID]
+		if !ok {
+			return fmt.Errorf("controller_seat_assignments must assign every configured controller.")
+		}
+		seatIndex, err := researchSeatIndex(seatID, len(payload.RosterPlayers))
+		if err != nil || seenSeats[seatID] {
+			return fmt.Errorf("controller_seat_assignments must be a permutation of physical seats.")
+		}
+		seenSeats[seatID] = true
+		if player.RequiredSeat != nil && *player.RequiredSeat != seatIndex {
+			return fmt.Errorf("controller_seat_assignments must satisfy human required_seat.")
+		}
+	}
+	return nil
 }
 
 func validateResearchRoster(players []ResearchRosterPlayer) error {
@@ -1524,6 +1808,11 @@ func createResearchSingleGameTable(payload ResearchCreatePayload, layout *valida
 	for _, player := range payload.RosterPlayers {
 		playerByRosterIndex[player.RosterIndex] = player
 	}
+	playerByID := make(map[string]ResearchRosterPlayer, len(payload.RosterPlayers))
+	for _, player := range payload.RosterPlayers {
+		playerByID[player.RosterPlayerID] = player
+	}
+	controllerIDsBySeat := researchControllerRosterPlayerIDsBySeat(payload, layout)
 
 	tables.Lock(ctx)
 	defer tables.Unlock(ctx)
@@ -1547,10 +1836,11 @@ func createResearchSingleGameTable(payload ResearchCreatePayload, layout *valida
 	}
 	for seatIndex, rosterIndex := range layout.seatOrder {
 		rosterPlayer := playerByRosterIndex[rosterIndex]
+		controller := playerByID[controllerIDsBySeat[seatIndex]]
 		userID := researchUserIDForTableSeat(table.ID, seatIndex)
-		username := researchDisplayName(payload.Game.IdentityDisplay, rosterPlayer, seatIndex)
+		username := researchDisplayName(payload.Game, rosterPlayer, seatIndex)
 		session := NewFakeSession(userID, username)
-		present := rosterPlayer.Type == "bot"
+		present := controller.Type == "bot"
 		if present {
 			sessions.Set(userID, session)
 		}
@@ -1576,17 +1866,15 @@ func createResearchSingleGameTable(payload ResearchCreatePayload, layout *valida
 
 func researchRegisterJoinLinks(gameID string, tableID uint64, payload ResearchCreatePayload, layout *validatedResearchLayout) map[string]string {
 	links := make(map[string]string)
-	playerByRosterIndex := make(map[int]ResearchRosterPlayer)
-	for _, player := range payload.RosterPlayers {
-		playerByRosterIndex[player.RosterIndex] = player
-	}
+	assignments := researchResolvedControllerSeatAssignments(payload, layout)
+	rosterPlayerIDsBySeat := researchRosterPlayerIDsBySeat(payload.RosterPlayers, layout.seatOrder)
 	researchSessionsMutex.Lock()
 	defer researchSessionsMutex.Unlock()
-	for seatIndex, rosterIndex := range layout.seatOrder {
-		player := playerByRosterIndex[rosterIndex]
+	for _, player := range payload.RosterPlayers {
 		if player.Type != "human" {
 			continue
 		}
+		seatIndex, _ := researchSeatIndex(assignments[player.RosterPlayerID], len(payload.RosterPlayers))
 		token := researchNewJoinToken()
 		join := &ResearchJoinToken{
 			Token:                 token,
@@ -1596,9 +1884,9 @@ func researchRegisterJoinLinks(gameID string, tableID uint64, payload ResearchCr
 			RosterIndex:           player.RosterIndex,
 			SeatIndex:             seatIndex,
 			UserID:                researchUserIDForTableSeat(tableID, seatIndex),
-			Username:              researchDisplayName(payload.Game.IdentityDisplay, player, seatIndex),
+			Username:              researchDisplayName(payload.Game, player, seatIndex),
 			HSMPrincipalID:        researchNewJoinToken(),
-			HSMIdentity:           player.RosterPlayerID,
+			HSMIdentity:           rosterPlayerIDsBySeat[seatIndex],
 			HSMViewerKind:         ResearchHSMViewerKindParticipant,
 			HSMDebugCapability:    player.HSMDebugCapability,
 			HSMPhysicalTruthGrant: player.HSMPhysicalTruthGrant,
@@ -1630,6 +1918,29 @@ func researchRegisterJoinLinks(gameID string, tableID uint64, payload ResearchCr
 		links[spectator.Identity] = fmt.Sprintf("%s/join/%s", researchPublicBaseURL(), token)
 	}
 	return links
+}
+
+func researchRegisterUnifiedJoinLink(
+	gameID string,
+	tableID uint64,
+	numPlayers int,
+) (string, *ResearchJoinToken) {
+	token := researchNewJoinToken()
+	join := &ResearchJoinToken{
+		Token:       token,
+		GameID:      gameID,
+		TableID:     tableID,
+		RosterIndex: -1,
+		SeatIndex:   -1,
+		UserID:      researchUserIDForTableSeat(tableID, numPlayers+1),
+		Username:    "Unified Manual Player",
+		Unified:     true,
+	}
+	researchSessionsMutex.Lock()
+	researchJoinTokens[token] = join
+	researchGuestUsers[join.UserID] = join
+	researchSessionsMutex.Unlock()
+	return fmt.Sprintf("%s/join/%s", researchPublicBaseURL(), token), join
 }
 
 func researchPregameJoinLinks(players []ResearchRosterPlayer, tableID string) map[string]string {
@@ -1673,8 +1984,11 @@ func researchUserIDForTableSeat(tableID uint64, seatIndex int) int {
 	return -100000 - int(tableID)*10 - seatIndex
 }
 
-func researchDisplayName(identityDisplay string, player ResearchRosterPlayer, seatIndex int) string {
-	if identityDisplay == "show_display_names" {
+func researchDisplayName(game ResearchGamePayload, player ResearchRosterPlayer, seatIndex int) string {
+	if game.IdentityDisplay == "seat_names" {
+		return game.SeatDisplayNames[seatIndex]
+	}
+	if game.IdentityDisplay == "show_display_names" {
 		if player.DisplayName != "" {
 			return player.DisplayName
 		}
@@ -1695,16 +2009,52 @@ func researchRosterPlayerIDsBySeat(players []ResearchRosterPlayer, seatOrder []i
 	return ids
 }
 
-func researchRosterPlayerNamesBySeat(players []ResearchRosterPlayer, seatOrder []int, identityDisplay string) []string {
+func researchRosterPlayerNamesBySeat(players []ResearchRosterPlayer, seatOrder []int, game ResearchGamePayload) []string {
 	playerByRosterIndex := make(map[int]ResearchRosterPlayer)
 	for _, player := range players {
 		playerByRosterIndex[player.RosterIndex] = player
 	}
 	names := make([]string, 0, len(seatOrder))
 	for seatIndex, rosterIndex := range seatOrder {
-		names = append(names, researchDisplayName(identityDisplay, playerByRosterIndex[rosterIndex], seatIndex))
+		names = append(names, researchDisplayName(game, playerByRosterIndex[rosterIndex], seatIndex))
 	}
 	return names
+}
+
+func researchResolvedControllerSeatAssignments(payload ResearchCreatePayload, layout *validatedResearchLayout) map[string]string {
+	if len(payload.ControllerSeatAssignments) != 0 {
+		return copyStringMap(payload.ControllerSeatAssignments)
+	}
+	assignments := make(map[string]string, len(payload.RosterPlayers))
+	playerByRosterIndex := make(map[int]ResearchRosterPlayer, len(payload.RosterPlayers))
+	for _, player := range payload.RosterPlayers {
+		playerByRosterIndex[player.RosterIndex] = player
+	}
+	for seatIndex, rosterIndex := range layout.seatOrder {
+		assignments[playerByRosterIndex[rosterIndex].RosterPlayerID] = fmt.Sprintf("seat_%d", seatIndex)
+	}
+	return assignments
+}
+
+func researchControllerRosterPlayerIDsBySeat(payload ResearchCreatePayload, layout *validatedResearchLayout) []string {
+	assignments := researchResolvedControllerSeatAssignments(payload, layout)
+	controllers := make([]string, len(payload.RosterPlayers))
+	for controllerID, seatID := range assignments {
+		seatIndex, _ := researchSeatIndex(seatID, len(controllers))
+		controllers[seatIndex] = controllerID
+	}
+	return controllers
+}
+
+func researchSeatIndex(seatID string, numPlayers int) (int, error) {
+	if !strings.HasPrefix(seatID, "seat_") {
+		return 0, fmt.Errorf("invalid physical seat")
+	}
+	seatIndex, err := strconv.Atoi(strings.TrimPrefix(seatID, "seat_"))
+	if err != nil || seatIndex < 0 || seatIndex >= numPlayers {
+		return 0, fmt.Errorf("invalid physical seat")
+	}
+	return seatIndex, nil
 }
 
 func researchBotRosterPlayerIDs(players []ResearchRosterPlayer) map[string]bool {
@@ -1745,6 +2095,7 @@ func copyStringMap(source map[string]string) map[string]string {
 }
 
 func researchSessionStatus(session *ResearchSession) gin.H {
+	lifecycle := session.lifecycleSnapshot()
 	session.HSMMutex.Lock()
 	requests := make([]*ResearchHSMSnapshotRequest, 0, len(session.PendingHSMSnapshotRequests))
 	for _, request := range session.PendingHSMSnapshotRequests {
@@ -1767,7 +2118,7 @@ func researchSessionStatus(session *ResearchSession) gin.H {
 		return physicalTruthRequests[i].ServerRequestID < physicalTruthRequests[j].ServerRequestID
 	})
 	status := gin.H{
-		"game_id":                       session.GameID,
+		"game_id":                       lifecycle.GameID,
 		"paused":                        false,
 		"waiting_for_reconnect":         nil,
 		"current_turn_roster_player_id": nil,
@@ -1785,18 +2136,18 @@ func researchSessionStatus(session *ResearchSession) gin.H {
 		"hsm_archive_generation_id":     archiveGenerationID,
 		"hsm_legal_actions_by_boundary": legalActionsByBoundary,
 	}
-	if session.TableID != 0 {
-		researchAttachTableStatus(status, session)
+	if lifecycle.TableID != 0 {
+		researchAttachTableStatus(status, lifecycle)
 	}
-	if session.Mode == "pregame_table" {
-		status["current_game_index"] = session.CurrentGameIndex
-		status["ready_status"] = session.ReadyStatus
+	if lifecycle.Mode == "pregame_table" {
+		status["current_game_index"] = lifecycle.CurrentGameIndex
+		status["ready_status"] = lifecycle.ReadyStatus
 		status["active_game_started"] = false
-		status["completed_games"] = session.CompletedGames
-	} else if session.Mode == "single_game" {
-		status["current_game_index"] = session.CurrentGameIndex
-		status["game_seed"] = session.Seed + session.CurrentGameIndex
-		status["restart_request"] = session.PendingRestartRequest
+		status["completed_games"] = lifecycle.CompletedGames
+	} else if lifecycle.Mode == "single_game" {
+		status["current_game_index"] = lifecycle.CurrentGameIndex
+		status["game_seed"] = lifecycle.Seed + lifecycle.CurrentGameIndex
+		status["restart_request"] = lifecycle.PendingRestartRequest
 	}
 	return status
 }
@@ -1807,20 +2158,22 @@ func researchRestartControllerUserID(
 	layout *validatedResearchLayout,
 ) int {
 	controllerRosterIndex := -1
+	controllerRosterPlayerID := ""
 	for _, player := range payload.RosterPlayers {
 		if player.Type == "human" && (controllerRosterIndex < 0 || player.RosterIndex < controllerRosterIndex) {
 			controllerRosterIndex = player.RosterIndex
+			controllerRosterPlayerID = player.RosterPlayerID
 		}
 	}
-	for seatIndex, rosterIndex := range layout.seatOrder {
-		if rosterIndex == controllerRosterIndex {
+	for seatIndex, controllerID := range researchControllerRosterPlayerIDsBySeat(payload, layout) {
+		if controllerID == controllerRosterPlayerID {
 			return table.Players[seatIndex].UserID
 		}
 	}
 	return 0
 }
 
-func researchAttachTableStatus(status gin.H, session *ResearchSession) {
+func researchAttachTableStatus(status gin.H, session researchSessionLifecycleSnapshot) {
 	ctx := context.Background()
 	table, ok := tables.Get(session.TableID, true)
 	if !ok {
@@ -1844,6 +2197,7 @@ func researchAttachTableStatus(status gin.H, session *ResearchSession) {
 	status["canonical_public_events"] = researchCanonicalPublicEvents(game)
 	if !finished && game.ActivePlayerIndex >= 0 && game.ActivePlayerIndex < len(session.RosterPlayerIDsBySeat) {
 		status["current_turn_roster_player_id"] = session.RosterPlayerIDsBySeat[game.ActivePlayerIndex]
+		status["current_turn_controller_roster_player_id"] = session.ControllerRosterPlayerIDsBySeat[game.ActivePlayerIndex]
 		status["legal_actions"] = researchLegalActions(game)
 	}
 }
@@ -1983,6 +2337,10 @@ func researchHandleGuestConnected(s *Session) {
 	if !ok {
 		return
 	}
+	if join.Unified {
+		researchHandleUnifiedGuestConnected(s, join)
+		return
+	}
 	if join.SeatIndex < 0 {
 		commandTableSpectate(NewSessionContext(s), s, &CommandData{
 			TableID:              join.TableID,
@@ -2029,6 +2387,43 @@ func researchHandleGuestConnected(s *Session) {
 			}
 		}
 	}
+}
+
+func researchHandleUnifiedGuestConnected(s *Session, join *ResearchJoinToken) {
+	ctx := NewSessionContext(s)
+	table, exists := getTableAndLock(ctx, s, join.TableID, true, true)
+	if !exists {
+		return
+	}
+	if !table.Running {
+		for _, player := range table.Players {
+			player.Present = true
+		}
+		tableStart(ctx, table.Players[0].Session, &CommandData{
+			TableID:      table.ID,
+			NoTableLock:  true,
+			NoTablesLock: true,
+		}, table)
+	}
+	controller, ok := table.researchUnifiedController(s.UserID)
+	if !ok {
+		table.Unlock(ctx)
+		s.Warning("The unified controller is not registered for this game.")
+		return
+	}
+	if !controller.Initialized {
+		controller.ViewedSeat = table.Game.ActivePlayerIndex
+		controller.SelectedBoundary = researchUnifiedLiveBoundary(table.Game)
+		controller.ActionCutoffs = []int{len(table.Game.Actions)}
+		controller.Initialized = true
+	}
+	viewedSeat := controller.ViewedSeat
+	table.Unlock(ctx)
+	commandTableSpectate(ctx, s, &CommandData{
+		TableID:                  join.TableID,
+		ShadowingPlayerIndex:     viewedSeat,
+		UnifiedControlAuthorized: true,
+	})
 }
 
 func researchGuestUsername(userID int) (string, bool) {

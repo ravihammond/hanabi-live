@@ -3,9 +3,10 @@
 import { assertDefined } from "complete-common";
 import type { CardLayout } from "./CardLayout";
 import { globals } from "./UIGlobals";
+import { isPlayerProjection } from "./unifiedController";
 
 export function get(): CardLayout {
-  if (!globals.state.playing) {
+  if (!isPlayerProjection(globals.state)) {
     throw new Error(
       "Failed to get our hand because we are not currently playing.",
     );
@@ -22,7 +23,7 @@ export function get(): CardLayout {
 }
 
 export function checkSetDraggableAll(): void {
-  if (!globals.state.playing) {
+  if (!isPlayerProjection(globals.state)) {
     return;
   }
 

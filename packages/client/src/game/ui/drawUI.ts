@@ -65,6 +65,12 @@ import {
 } from "./researchSingleGameControls";
 import * as stats from "./stats";
 import * as timer from "./timer";
+import {
+  canPauseGame,
+  canRestartGame,
+  canTerminateGame,
+  getUnifiedController,
+} from "./unifiedController";
 import { toggleZen } from "./zen";
 
 interface Values {
@@ -176,6 +182,16 @@ export function setSkullEnabled(): void {
 
 export function setSkullNormal(): void {
   globals.elements.terminateButton?.setImage(globals.imageLoader!.get("skull"));
+}
+
+export function requestTermination(terminateImmediately: boolean): void {
+  if (!canTerminateGame(globals.state)) {
+    return;
+  }
+  globals.lobby.conn!.send(
+    terminateImmediately ? "tableTerminate" : "tableVoteForTermination",
+    { tableID: globals.lobby.tableID },
+  );
 }
 
 function drawBackground() {
@@ -1122,7 +1138,7 @@ function drawScoreArea() {
 
   // The terminate button (which immediately ends the current game). This is placed on top of the
   // 3rd strike.
-  if (globals.state.playing) {
+  if (canTerminateGame(globals.state)) {
     globals.elements.strikeSquares[2]!.hide();
     globals.elements.strikeXs[2]!.hide();
     const questionMarkLabel = globals.elements.questionMarkLabels[2];
@@ -1136,9 +1152,15 @@ function drawScoreArea() {
         y: 0.115 * winH,
         width: 0.03 * winW,
         height: 0.053 * winH,
-        visible: globals.state.playing,
+        visible: canTerminateGame(globals.state),
       },
-      [globals.imageLoader!.get("skull")],
+      [
+        globals.imageLoader!.get(
+          getUnifiedController(globals.state)?.terminationVote === true
+            ? "skull_vtk"
+            : "skull",
+        ),
+      ],
     );
     globals.elements.scoreArea.add(terminateButton as unknown as Konva.Group);
     terminateButton.on(
@@ -1146,14 +1168,10 @@ function drawScoreArea() {
       (event: Konva.KonvaEventObject<MouseEvent>) => {
         if (event.evt.button === 0) {
           // Left click.
-          globals.lobby.conn!.send("tableVoteForTermination", {
-            tableID: globals.lobby.tableID,
-          });
+          requestTermination(false);
         } else if (event.evt.button === 2) {
           // Right click.
-          globals.lobby.conn!.send("tableTerminate", {
-            tableID: globals.lobby.tableID,
-          });
+          requestTermination(true);
         }
       },
     );
@@ -1737,11 +1755,11 @@ function drawTimers() {
       // "event.evt.buttons" is always 0 here.
       if (event.evt.button === 2) {
         // Right-click
-        timerClick();
+        requestPauseFromTimer();
       }
     },
   );
-  globals.elements.timer1.on("dbltap", timerClick);
+  globals.elements.timer1.on("dbltap", requestPauseFromTimer);
 
   // The timer for the current player.
   globals.elements.timer2 = new TimerDisplay({
@@ -1764,11 +1782,20 @@ function drawTimers() {
   }
 }
 
-function timerClick() {
+export function requestPauseFromTimer(): void {
   if (
     !globals.options.timed // We do not need to pause if this is not a timed game.
     || globals.state.pause.active // We do not need to pause if the game is already paused.
+    || !canPauseGame(globals.state)
   ) {
+    return;
+  }
+
+  if (getUnifiedController(globals.state) !== null) {
+    globals.lobby.conn!.send("pause", {
+      tableID: globals.lobby.tableID,
+      setting: "pause",
+    });
     return;
   }
 
@@ -2471,6 +2498,9 @@ function drawPauseArea() {
     text: "Unpause",
   });
   globals.elements.pauseButton.on("click tap", () => {
+    if (!canPauseGame(globals.state)) {
+      return;
+    }
     globals.lobby.conn!.send("pause", {
       tableID: globals.lobby.tableID,
       setting: "unpause",
@@ -2513,7 +2543,7 @@ function drawPauseArea() {
 }
 
 function drawRestartArea() {
-  if (globals.researchRestartController) {
+  if (canRestartGame(globals.state, globals.researchRestartController)) {
     return;
   }
 

@@ -3,27 +3,40 @@ package main
 // CheckScrub removes some information from the action to prevent players having more knowledge
 // than they should have, if necessary (e.g. when a card is drawn to a player's hand)
 func CheckScrub(t *Table, action interface{}, userID int) interface{} {
+	return checkScrubForPlayer(t, action, getEquivalentPlayer(t, userID))
+}
+
+// CheckScrubForPlayerIndex applies the ordinary Hanabi.live player-visibility rules for an explicit
+// physical seat. Unified projections use this seam instead of manufacturing an omniscient client.
+func CheckScrubForPlayerIndex(t *Table, action interface{}, playerIndex int) interface{} {
+	if playerIndex < 0 || playerIndex >= len(t.Game.Players) {
+		return action
+	}
+	return checkScrubForPlayer(t, action, t.Game.Players[playerIndex])
+}
+
+func checkScrubForPlayer(t *Table, action interface{}, player *GamePlayer) interface{} {
 	cardIdentityAction, ok := action.(ActionCardIdentity)
 	if ok && cardIdentityAction.Type == "cardIdentity" {
-		cardIdentityAction.Scrub(t, userID)
+		cardIdentityAction.scrubForPlayer(player)
 		return cardIdentityAction
 	}
 
 	discardAction, ok := action.(ActionDiscard)
 	if ok && discardAction.Type == "discard" {
-		discardAction.Scrub(t, userID)
+		discardAction.scrubForPlayer(t, player)
 		return discardAction
 	}
 
 	drawAction, ok := action.(ActionDraw)
 	if ok && drawAction.Type == "draw" {
-		drawAction.Scrub(t, userID)
+		drawAction.scrubForPlayer(t, player)
 		return drawAction
 	}
 
 	playAction, ok := action.(ActionPlay)
 	if ok && playAction.Type == "play" {
-		playAction.Scrub(t, userID)
+		playAction.scrubForPlayer(t, player)
 		return playAction
 	}
 
@@ -33,9 +46,12 @@ func CheckScrub(t *Table, action interface{}, userID int) interface{} {
 // Scrub removes some information from a draw so that we do not reveal the identity of drawn
 // cards to the players drawing those cards
 func (a *ActionDraw) Scrub(t *Table, userID int) {
+	a.scrubForPlayer(t, getEquivalentPlayer(t, userID))
+}
+
+func (a *ActionDraw) scrubForPlayer(t *Table, p *GamePlayer) {
 	// Local variables
 	g := t.Game
-	p := getEquivalentPlayer(t, userID)
 
 	if p == nil {
 		// Spectators get to see the identities of all drawn cards
@@ -54,8 +70,11 @@ func (a *ActionDraw) Scrub(t *Table, userID int) {
 // Scrub removes some information from played cards so that we do not reveal the identity of played
 // cards to anybody (in some specific variants)
 func (a *ActionPlay) Scrub(t *Table, userID int) {
+	a.scrubForPlayer(t, getEquivalentPlayer(t, userID))
+}
+
+func (a *ActionPlay) scrubForPlayer(t *Table, p *GamePlayer) {
 	// Local variables
-	p := getEquivalentPlayer(t, userID)
 	variant := variants[t.Options.VariantName]
 
 	if p == nil {
@@ -72,8 +91,11 @@ func (a *ActionPlay) Scrub(t *Table, userID int) {
 // Scrub removes some information from discarded cards so that we do not reveal the identity of
 // discarded cards to anybody (in some specific variants)
 func (a *ActionDiscard) Scrub(t *Table, userID int) {
+	a.scrubForPlayer(t, getEquivalentPlayer(t, userID))
+}
+
+func (a *ActionDiscard) scrubForPlayer(t *Table, p *GamePlayer) {
 	// Local variables
-	p := getEquivalentPlayer(t, userID)
 	variant := variants[t.Options.VariantName]
 
 	if p == nil {
@@ -91,8 +113,10 @@ func (a *ActionDiscard) Scrub(t *Table, userID int) {
 // Scrub removes some information from a card identity action so that we do not reveal the identity
 // of sliding cards to the players who are holding those cards
 func (a *ActionCardIdentity) Scrub(t *Table, userID int) {
-	// Local variables
-	p := getEquivalentPlayer(t, userID)
+	a.scrubForPlayer(getEquivalentPlayer(t, userID))
+}
+
+func (a *ActionCardIdentity) scrubForPlayer(p *GamePlayer) {
 
 	if p == nil {
 		// Spectators get to see the identities of all cards

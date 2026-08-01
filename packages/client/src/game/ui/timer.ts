@@ -7,6 +7,12 @@ import { SoundType } from "../types/SoundType";
 import { globals } from "./UIGlobals";
 import type { TimerDisplay } from "./controls/TimerDisplay";
 import { drawLayer } from "./konvaHelpers";
+import {
+  canUnifiedControllerAct,
+  isPlayerProjection,
+  isUnifiedController,
+  isUnifiedControllerFinished,
+} from "./unifiedController";
 
 export interface ClockData {
   times: number[];
@@ -32,6 +38,20 @@ export interface ClockData {
 export function update(data: ClockData): void {
   stop();
 
+  if (isUnifiedControllerFinished(globals.state)) {
+    return;
+  }
+
+  // Retain authoritative clock state even when rendering is temporarily deferred (for example, when
+  // an unpause clock arrives immediately before its atomic unified projection).
+  globals.playerTimes = data.times;
+  globals.activePlayerIndex = data.activePlayerIndex;
+  globals.timeTaken = data.timeTaken;
+  if (data.activePlayerIndex !== -1) {
+    globals.startingTurnTime = globals.playerTimes[data.activePlayerIndex]!;
+  }
+  globals.lastTimerUpdateTimeMS = Date.now();
+
   // We do not need to update the timers if they are not showing.
   if (globals.elements.timer1 === null || globals.elements.timer2 === null) {
     return;
@@ -43,19 +63,8 @@ export function update(data: ClockData): void {
     return;
   }
 
-  // Record the data
-  globals.playerTimes = data.times;
-  globals.activePlayerIndex = data.activePlayerIndex;
-  globals.timeTaken = data.timeTaken;
-
-  // Keep track of what the active player's time was when they started their turn.
-  globals.startingTurnTime = globals.playerTimes[data.activePlayerIndex]!;
-
-  // Mark the time that we updated the local player times.
-  globals.lastTimerUpdateTimeMS = Date.now();
-
   // Update onscreen time displays.
-  if (globals.state.playing) {
+  if (isPlayerProjection(globals.state)) {
     // The visibility of the first timer does not change during a game.
     let time = globals.playerTimes[globals.metadata.ourPlayerIndex]!;
     if (!globals.options.timed) {
@@ -67,9 +76,10 @@ export function update(data: ClockData): void {
     globals.elements.timer1.setTimerText(text);
   }
 
-  const ourTurn =
-    globals.state.playing
-    && data.activePlayerIndex === globals.metadata.ourPlayerIndex;
+  const ourTurn = isUnifiedController(globals.state)
+    ? canUnifiedControllerAct(globals.state)
+    : globals.state.playing
+      && data.activePlayerIndex === globals.metadata.ourPlayerIndex;
   if (!ourTurn) {
     // Update the UI with the value of the timer for the active player.
     let time = globals.playerTimes[data.activePlayerIndex]!;

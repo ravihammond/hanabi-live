@@ -11,6 +11,11 @@ import type { Shuttle } from "./controls/Shuttle";
 import { getCardOrStackBase } from "./getCardOrStackBase";
 import { setHSMTargetBoundary } from "./hsmInspector";
 import { animate } from "./konvaHelpers";
+import {
+  getReplayFinalBoundary,
+  getUnifiedController,
+  requestUnifiedProjection,
+} from "./unifiedController";
 
 const setTurnButton = getHTMLElement("#set-turn-button");
 const setTurnInput = getHTMLInputElement("#set-turn-input");
@@ -20,6 +25,14 @@ const setTurnInput = getHTMLInputElement("#set-turn-input");
 // ---------------------
 
 export function enter(customSegment?: number): void {
+  const unifiedController = getUnifiedController(globals.state);
+  if (unifiedController !== null) {
+    requestUnifiedProjection(
+      unifiedController.viewedSeat,
+      customSegment ?? unifiedController.selectedBoundary,
+    );
+    return;
+  }
   if (globals.state.replay.active) {
     return;
   }
@@ -41,6 +54,17 @@ export function enter(customSegment?: number): void {
 }
 
 export function exit(): void {
+  const unifiedController = getUnifiedController(globals.state);
+  if (unifiedController !== null) {
+    if (unifiedController.selectedBoundary === unifiedController.liveBoundary) {
+      return;
+    }
+    requestUnifiedProjection(
+      unifiedController.viewedSeat,
+      unifiedController.liveBoundary,
+    );
+    return;
+  }
   if (!globals.state.replay.active) {
     return;
   }
@@ -60,6 +84,10 @@ export function exit(): void {
 }
 
 function getCurrentReplaySegment() {
+  const unifiedController = getUnifiedController(globals.state);
+  if (unifiedController !== null) {
+    return unifiedController.selectedBoundary;
+  }
   const finalSegment = globals.state.ongoingGame.turn.segment!;
   return globals.state.replay.active
     ? globals.state.replay.segment
@@ -71,6 +99,14 @@ export function goToSegment(
   breakFree = false,
   force = false,
 ): void {
+  const unifiedController = getUnifiedController(globals.state);
+  if (unifiedController !== null) {
+    const selectedBoundary = clamp(segment, 0, unifiedController.liveBoundary);
+    if (selectedBoundary !== unifiedController.selectedBoundary) {
+      requestUnifiedProjection(unifiedController.viewedSeat, selectedBoundary);
+    }
+    return;
+  }
   const finalSegment = globals.state.ongoingGame.turn.segment!;
   const currentSegment = getCurrentReplaySegment();
 
@@ -174,7 +210,7 @@ export function backFull(): void {
 }
 
 export function forwardFull(): void {
-  const finalSegment = globals.state.ongoingGame.turn.segment!;
+  const finalSegment = getReplayFinalBoundary(globals.state) ?? 0;
   goToSegment(finalSegment, true);
 }
 
@@ -196,7 +232,10 @@ export function exitButton(): void {
 
 // Gets the current segment from an X position relative to a maximum width
 function segmentFromBarPosition(x: number, w: number) {
-  const finalSegment = globals.state.ongoingGame.turn.segment!;
+  const finalSegment = getReplayFinalBoundary(globals.state) ?? 0;
+  if (finalSegment === 0) {
+    return 0;
+  }
   const step = w / finalSegment;
   return Math.floor((x + step / 2) / step);
 }
@@ -239,7 +278,10 @@ export function shuttleDragBound(
   const shuttleX = clamp(pos.x - min, 0, w);
   const segment = segmentFromBarPosition(shuttleX, w);
 
-  const finalSegment = globals.state.ongoingGame.turn.segment!;
+  const finalSegment = getReplayFinalBoundary(globals.state) ?? 0;
+  if (finalSegment === 0) {
+    return { x: min, y: this.getAbsolutePosition().y };
+  }
   const step = w / finalSegment;
 
   return {
@@ -266,7 +308,7 @@ function positionReplayShuttle(
   smaller: boolean,
   fast: boolean,
 ) {
-  let finalSegment = globals.state.ongoingGame.turn.segment;
+  let finalSegment = getReplayFinalBoundary(globals.state);
   if (
     finalSegment === null // The final segment is null during initialization
     || finalSegment === 0 // The final segment is 0 before a move is made
@@ -345,7 +387,7 @@ export function adjustShuttles(fast: boolean): void {
 // -----------------------------
 
 export function promptTurn(): void {
-  const finalSegment = globals.state.ongoingGame.turn.segment! + 1;
+  const finalSegment = (getReplayFinalBoundary(globals.state) ?? 0) + 1;
   const currentSegment = getCurrentReplaySegment() + 1;
 
   setTurnInput.min = "1";

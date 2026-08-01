@@ -10,9 +10,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path"
+	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	gsessions "github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
@@ -99,6 +102,31 @@ func researchHSMTestViewer(join *ResearchJoinToken) *Session {
 	return viewer
 }
 
+func researchOnlyOutboundPayload(
+	t *testing.T,
+	messages []string,
+	command string,
+) map[string]interface{} {
+	t.Helper()
+	prefix := command + " "
+	var payload map[string]interface{}
+	for _, message := range messages {
+		if !strings.HasPrefix(message, prefix) {
+			continue
+		}
+		if payload != nil {
+			t.Fatalf("received more than one %s message: %#v", command, messages)
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(message, prefix)), &payload); err != nil {
+			t.Fatalf("failed to parse %s message: %v", command, err)
+		}
+	}
+	if payload == nil {
+		t.Fatalf("did not receive %s message: %#v", command, messages)
+	}
+	return payload
+}
+
 func TestSingleGameRestartControllerRequestAppearsInStatus(t *testing.T) {
 	researchTestInit(t)
 	commandInit()
@@ -154,6 +182,194 @@ func TestSingleGameRestartControllerRequestAppearsInStatus(t *testing.T) {
 	}
 	if status["current_game_index"] != float64(2) || status["game_seed"] != float64(102) {
 		t.Fatalf("expected current index/seed 2/102, got %#v", status)
+	}
+}
+
+func TestResearchSessionLifecycleMutationHasOneConcurrentOwner(t *testing.T) {
+	session := &ResearchSession{}
+	const contenders = 32
+	start := make(chan struct{})
+	results := make(chan bool, contenders)
+	var ready sync.WaitGroup
+	ready.Add(contenders)
+
+	for i := 0; i < contenders; i++ {
+		go func() {
+			ready.Done()
+			<-start
+			results <- session.tryBeginLifecycleMutation()
+		}()
+	}
+	ready.Wait()
+	close(start)
+
+	owners := 0
+	for i := 0; i < contenders; i++ {
+		if <-results {
+			owners++
+		}
+	}
+	if owners != 1 {
+		t.Fatalf("expected exactly one lifecycle mutation owner, got %d", owners)
+	}
+	session.endLifecycleMutation()
+	if !session.tryBeginLifecycleMutation() {
+		t.Fatal("completed lifecycle mutation did not release ownership")
+	}
+	session.endLifecycleMutation()
+}
+
+func TestRestartEndpointRejectsAConcurrentLifecycleOwnerWithoutConsumingTheRequest(t *testing.T) {
+	researchTestInit(t)
+	commandInit()
+	router := researchTestRouter()
+	created, join := researchCreateUnifiedTwoPlayerGame(t, router)
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	commandResearchRestart(context.Background(), viewer, &CommandData{
+		TableID:     created.TableID,
+		RestartKind: researchRestartSameSeed,
+	})
+
+	researchSessionsMutex.Lock()
+	session := researchSessions[created.GameID]
+	researchSessionsMutex.Unlock()
+	if !session.tryBeginLifecycleMutation() {
+		t.Fatal("failed to reserve the test lifecycle mutation")
+	}
+	defer session.endLifecycleMutation()
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	gameBefore := table.Game
+	table.Unlock(nil)
+
+	response := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/sessions/"+created.GameID+"/restart",
+		map[string]interface{}{
+			"request_id":            1,
+			"game_index":            2,
+			"game_seed":             102,
+			"seeded_initial_layout": researchUnifiedTwoPlayerPayload().SeededInitialLayout,
+			"controller_seat_assignments": map[string]string{
+				"roster_player_0": "seat_0",
+				"roster_player_1": "seat_1",
+			},
+		},
+		"secret",
+	)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("expected concurrent restart to return 409, got %d: %s", response.Code, response.Body.String())
+	}
+	if request := session.lifecycleSnapshot().PendingRestartRequest; request == nil || request.RequestID != 1 {
+		t.Fatalf("concurrent restart consumed the pending request: %#v", request)
+	}
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	if table.Game != gameBefore {
+		t.Fatal("concurrent restart mutated the authoritative game")
+	}
+}
+
+func TestUnifiedControllerOwnsPersistentSingleGameRestartRequests(t *testing.T) {
+	researchTestInit(t)
+	commandInit()
+	router := researchTestRouter()
+	created, join := researchCreateUnifiedTwoPlayerGame(t, router)
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+
+	commandResearchRestart(context.Background(), viewer, &CommandData{
+		TableID:     created.TableID,
+		RestartKind: researchRestartSameSeed,
+	})
+
+	statusResponse := researchJSONRequest(
+		t,
+		router,
+		http.MethodGet,
+		"/research/sessions/"+created.GameID+"/status",
+		nil,
+		"secret",
+	)
+	if statusResponse.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", statusResponse.Code, statusResponse.Body.String())
+	}
+	var status map[string]interface{}
+	if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil {
+		t.Fatalf("failed to parse status response: %v", err)
+	}
+	restartRequest, ok := status["restart_request"].(map[string]interface{})
+	if !ok || restartRequest["kind"] != researchRestartSameSeed {
+		t.Fatalf("unified controller did not own restart authority: %#v", status["restart_request"])
+	}
+}
+
+func TestUnifiedRestartResetsAndRevisesTheControllerProjection(t *testing.T) {
+	researchTestInit(t)
+	commandInit()
+	router := researchTestRouter()
+	created, join := researchCreateUnifiedTwoPlayerGame(t, router)
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	targetRank := table.Game.Players[1].Hand[0].Rank
+	table.Unlock(nil)
+	expectedActorSeat := 0
+	expectedLiveBoundary := 0
+	expectedRevision := uint64(1)
+	commandAction(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		Type:                       ActionTypeRankClue,
+		Target:                     1,
+		Value:                      targetRank,
+		ExpectedActorSeat:          &expectedActorSeat,
+		ExpectedLiveBoundary:       &expectedLiveBoundary,
+		ExpectedProjectionRevision: &expectedRevision,
+	})
+	commandResearchRestart(context.Background(), viewer, &CommandData{
+		TableID:     created.TableID,
+		RestartKind: researchRestartSameSeed,
+	})
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+	restartPayload := map[string]interface{}{
+		"request_id":            1,
+		"game_index":            2,
+		"game_seed":             102,
+		"seeded_initial_layout": researchUnifiedTwoPlayerPayload().SeededInitialLayout,
+		"controller_seat_assignments": map[string]string{
+			"roster_player_0": "seat_0",
+			"roster_player_1": "seat_1",
+		},
+	}
+
+	response := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/sessions/"+created.GameID+"/restart",
+		restartPayload,
+		"secret",
+	)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected unified restart 200, got %d: %s", response.Code, response.Body.String())
+	}
+	projection := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
+	for key, expected := range map[string]interface{}{
+		"viewedSeat":         float64(0),
+		"currentTurnSeat":    float64(0),
+		"selectedBoundary":   float64(0),
+		"liveBoundary":       float64(0),
+		"projectionRevision": float64(4),
+	} {
+		if projection[key] != expected {
+			t.Fatalf("restart did not reset %s: got %#v, want %#v", key, projection[key], expected)
+		}
 	}
 }
 
@@ -1823,6 +2039,13 @@ func TestSingleGameRestartRequestTransitionsSameTableExactlyOnce(t *testing.T) {
 	commandInit()
 	router := researchTestRouter()
 	payload := researchSingleGamePayload()
+	payload.Game.IdentityDisplay = "seat_names"
+	payload.Game.SeatDisplayNames = []string{"Alice", "Bob"}
+	payload.RosterPlayers[0].RequiredSeat = researchIntPtr(0)
+	payload.ControllerSeatAssignments = map[string]string{
+		"roster_player_0": "seat_0",
+		"roster_player_1": "seat_1",
+	}
 	payload.RosterPlayers[0].HSMDebugCapability =
 		ResearchHSMCapabilitySwitchable
 
@@ -1843,6 +2066,9 @@ func TestSingleGameRestartRequestTransitionsSameTableExactlyOnce(t *testing.T) {
 	}
 	token := path.Base(created.JoinLinks["roster_player_0"])
 	join := researchJoinTokens[token]
+	if join.HSMIdentity != "roster_player_1" {
+		t.Fatalf("forced-seat HSM perspective must use the physical Roster Player, got %#v", join)
+	}
 	controller := researchHSMTestViewer(join)
 	researchHandleGuestConnected(controller)
 	commandResearchHSMRequest(context.Background(), controller, &CommandData{
@@ -1887,6 +2113,10 @@ func TestSingleGameRestartRequestTransitionsSameTableExactlyOnce(t *testing.T) {
 		"game_index":            3,
 		"game_seed":             103,
 		"seeded_initial_layout": nextLayout,
+		"controller_seat_assignments": map[string]string{
+			"roster_player_0": "seat_0",
+			"roster_player_1": "seat_1",
+		},
 	}
 	restartResponse := researchJSONRequest(
 		t,
@@ -1946,9 +2176,15 @@ func TestSingleGameRestartRequestTransitionsSameTableExactlyOnce(t *testing.T) {
 	if table.Players[0].UserID != join.UserID {
 		t.Fatalf("expected controller identity to move to seat 0, got players %#v", table.Players)
 	}
+	if table.Players[0].Name != "Alice" || table.Players[1].Name != "Bob" {
+		t.Fatalf("restart did not retain physical seat names: %#v", table.Players)
+	}
 	table.Unlock(nil)
 	if path.Base(created.JoinLinks["roster_player_0"]) != token {
 		t.Fatal("restart changed the controller join link")
+	}
+	if join.HSMIdentity != "roster_player_0" {
+		t.Fatalf("restart did not update the physical HSM identity: %#v", join)
 	}
 
 	replayedResponse := researchJSONRequest(
@@ -1985,6 +2221,1585 @@ func TestResearchControlAPIRejectsInvalidDeckOrder(t *testing.T) {
 	if !bytes.Contains(response.Body.Bytes(), []byte("Deck Order must contain 50 cards")) {
 		t.Fatalf("missing deck-length validation message: %s", response.Body.String())
 	}
+}
+
+func TestResearchSingleGameUsesSeatNamesAndForcedControllerSeat(t *testing.T) {
+	researchTestInit(t)
+	router := researchTestRouter()
+	payload := researchSingleGamePayload()
+	payload.Game.IdentityDisplay = "seat_names"
+	payload.Game.SeatDisplayNames = []string{"Alice", "Bob"}
+	payload.RosterPlayers[0].RequiredSeat = researchIntPtr(0)
+	payload.ControllerSeatAssignments = map[string]string{
+		"roster_player_0": "seat_0",
+		"roster_player_1": "seat_1",
+	}
+
+	response := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/single-game",
+		payload,
+		"secret",
+	)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	}
+	var created CreatedResearchSingleGame
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to parse create response: %v", err)
+	}
+	table, ok := tables.Get(created.TableID, true)
+	if !ok {
+		t.Fatalf("created table %d does not exist", created.TableID)
+	}
+	table.Lock(nil)
+	if table.Players[0].Name != "Alice" || table.Players[1].Name != "Bob" {
+		t.Fatalf("expected physical seat names Alice/Bob, got %#v", table.Players)
+	}
+	table.Unlock(nil)
+
+	token := path.Base(created.JoinLinks["roster_player_0"])
+	researchSessionsMutex.Lock()
+	join := researchJoinTokens[token]
+	researchSessionsMutex.Unlock()
+	if join == nil || join.SeatIndex != 0 {
+		t.Fatalf("expected human controller join token at seat 0, got %#v", join)
+	}
+}
+
+func TestResearchSingleGameCreatesOneUnifiedManualJoinLink(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	if created.UnifiedJoinLink == "" {
+		t.Fatal("unified game did not return its unified browser join link")
+	}
+	if len(created.JoinLinks) != 0 {
+		t.Fatalf("unified game returned per-player join links: %#v", created.JoinLinks)
+	}
+	if join == nil || !join.Unified {
+		t.Fatalf("unified join did not start at the first current-turn seat: %#v", join)
+	}
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	controller, ok := table.researchUnifiedController(join.UserID)
+	if !ok || controller.ViewedSeat != 0 {
+		t.Fatalf("table did not own the unified controller's initial projection: %#v", controller)
+	}
+}
+
+func TestUnifiedCreateAdvertisesUnifiedManualV1AndExactlyOneBearerLink(t *testing.T) {
+	researchTestInit(t)
+	router := researchTestRouter()
+	payload := researchUnifiedTwoPlayerPayload()
+
+	response := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/single-game",
+		payload,
+		"secret",
+	)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	}
+	var created struct {
+		Capabilities    []string          `json:"capabilities"`
+		JoinLinks       map[string]string `json:"join_links"`
+		UnifiedJoinLink string            `json:"unified_join_link"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to parse unified create response: %v", err)
+	}
+	if !reflect.DeepEqual(created.Capabilities, []string{"unified_manual_v1"}) {
+		t.Fatalf("unexpected unified protocol capabilities: %#v", created.Capabilities)
+	}
+	if strings.TrimSpace(created.UnifiedJoinLink) == "" {
+		t.Fatal("unified create response did not include one bearer link")
+	}
+	if len(created.JoinLinks) != 0 {
+		t.Fatalf("unified create response included ordinary join links: %#v", created.JoinLinks)
+	}
+}
+
+func TestUnifiedMagicJoinRedirectsToTheSharedRendererUnifiedRoute(t *testing.T) {
+	researchTestInit(t)
+	router := researchTestRouter()
+	created, _ := researchCreateUnifiedTwoPlayerGame(t, router)
+	token := path.Base(created.UnifiedJoinLink)
+
+	redirect := httptest.NewRecorder()
+	router.ServeHTTP(redirect, httptest.NewRequest(http.MethodGet, "/join/"+token, nil))
+
+	if redirect.Code != http.StatusFound {
+		t.Fatalf("expected unified magic join redirect, got %d: %s", redirect.Code, redirect.Body.String())
+	}
+	expectedLocation := "/unified-game/" + strconv.FormatUint(created.TableID, 10) +
+		"?researchMagicJoin=" + token
+	if redirect.Header().Get("Location") != expectedLocation {
+		t.Fatalf(
+			"expected unified magic join redirect to %q, got %q",
+			expectedLocation,
+			redirect.Header().Get("Location"),
+		)
+	}
+}
+
+func TestUnifiedManualJoinStartsAllSeatsAndViewsTheCurrentPlayer(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+
+	researchHandleGuestConnected(viewer)
+
+	table, ok := tables.Get(created.TableID, true)
+	if !ok {
+		t.Fatalf("created table %d does not exist", created.TableID)
+	}
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	if !table.Running || table.Game == nil {
+		t.Fatal("unified browser join did not start the manual game")
+	}
+	spectatorIndex := table.GetSpectatorIndexFromID(viewer.UserID)
+	if spectatorIndex < 0 {
+		t.Fatal("unified browser was not attached to the live game")
+	}
+	viewedSeat := table.Spectators[spectatorIndex].ShadowingPlayerIndex
+	if viewedSeat != table.Game.ActivePlayerIndex || viewedSeat != 0 {
+		t.Fatalf("initial unified perspective %d did not follow current seat %d", viewedSeat, table.Game.ActivePlayerIndex)
+	}
+}
+
+func TestUnifiedManualInitPresentsTheViewedSeatWithoutAnOrdinaryPlayerDisguise(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandGetGameInfo1(context.Background(), viewer, &CommandData{TableID: created.TableID})
+
+	var initMessage map[string]interface{}
+	for _, message := range outbound.messages {
+		if strings.HasPrefix(message, "init ") {
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(message, "init ")), &initMessage); err != nil {
+				t.Fatalf("failed to parse init message: %v", err)
+			}
+		}
+	}
+	if initMessage == nil {
+		t.Fatalf("unified viewer did not receive init metadata: %#v", outbound.messages)
+	}
+	if initMessage["researchUnified"] != true || initMessage["ourPlayerIndex"] != float64(0) {
+		t.Fatalf("init did not expose the initial unified perspective: %#v", initMessage)
+	}
+	if initMessage["spectating"] != true || initMessage["shadowing"] != true {
+		t.Fatalf("unified controller was exposed as an ordinary player: %#v", initMessage)
+	}
+}
+
+func TestUnifiedInitExposesSeatlessControllerStateAndCapabilities(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandGetGameInfo1(context.Background(), viewer, &CommandData{TableID: created.TableID})
+
+	initMessage := researchOnlyOutboundPayload(t, outbound.messages, "init")
+	if initMessage["spectating"] != true || initMessage["shadowing"] != true {
+		t.Fatalf("unified controller was disguised as an ordinary player: %#v", initMessage)
+	}
+	controller, ok := initMessage["unifiedController"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("init did not include unified controller metadata: %#v", initMessage)
+	}
+	expected := map[string]interface{}{
+		"protocolCapability": researchUnifiedManualCapability,
+		"viewedSeat":         float64(0),
+		"currentTurnSeat":    float64(0),
+		"selectedBoundary":   float64(0),
+		"liveBoundary":       float64(0),
+		"projectionRevision": float64(1),
+		"finished":           false,
+	}
+	for key, value := range expected {
+		if controller[key] != value {
+			t.Fatalf("unexpected unified controller %s: got %#v, want %#v", key, controller[key], value)
+		}
+	}
+	capabilities, ok := controller["capabilities"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("init did not include unified capabilities: %#v", controller)
+	}
+	wantCapabilities := map[string]interface{}{
+		"canAct":                   true,
+		"canEditViewedPlayerNotes": true,
+		"canPause":                 false,
+		"canTerminate":             true,
+		"canRestart":               true,
+	}
+	if !reflect.DeepEqual(capabilities, wantCapabilities) {
+		t.Fatalf("unexpected unified capabilities: got %#v, want %#v", capabilities, wantCapabilities)
+	}
+}
+
+func TestUnifiedPerspectiveSwitchPreservesGameAndTurnState(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	gameBefore := table.Game
+	turnBefore := table.Game.Turn
+	activeBefore := table.Game.ActivePlayerIndex
+	actionsBefore := append([]interface{}(nil), table.Game.Actions...)
+	table.Unlock(nil)
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandResearchPerspective(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		UnifiedViewedSeat:          researchIntPtr(1),
+		UnifiedSelectedBoundary:    researchIntPtr(0),
+		ExpectedProjectionRevision: researchUint64Ptr(1),
+	})
+
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	spectatorIndex := table.GetSpectatorIndexFromID(viewer.UserID)
+	if spectatorIndex < 0 || table.Spectators[spectatorIndex].ShadowingPlayerIndex != 1 {
+		t.Fatalf("unified perspective did not switch to seat 1: %#v", table.Spectators)
+	}
+	if table.Game != gameBefore || table.Game.Turn != turnBefore || table.Game.ActivePlayerIndex != activeBefore || !reflect.DeepEqual(table.Game.Actions, actionsBefore) {
+		t.Fatal("perspective navigation mutated the authoritative game state")
+	}
+	if len(outbound.messages) != 1 || !strings.HasPrefix(outbound.messages[0], "researchUnifiedProjection ") {
+		t.Fatalf("perspective switch did not emit one atomic projection: %#v", outbound.messages)
+	}
+}
+
+func TestUnifiedPerspectiveSwitchReturnsAtomicProjectionAtSelectedBoundary(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	targetRank := table.Game.Players[1].Hand[0].Rank
+	actor := table.Players[0].Session
+	table.Unlock(nil)
+	commandAction(context.Background(), actor, &CommandData{
+		TableID: created.TableID,
+		Type:    ActionTypeRankClue,
+		Target:  1,
+		Value:   targetRank,
+	})
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+	var request CommandData
+	if err := json.Unmarshal([]byte(`{
+		"tableID": 1,
+		"viewedSeat": 1,
+		"selectedBoundary": 0,
+		"expectedProjectionRevision": 2
+	}`), &request); err != nil {
+		t.Fatalf("failed to decode perspective request: %v", err)
+	}
+	request.TableID = created.TableID
+
+	commandResearchPerspective(context.Background(), viewer, &request)
+
+	projection := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
+	for key, expected := range map[string]interface{}{
+		"viewedSeat":         float64(1),
+		"selectedBoundary":   float64(0),
+		"liveBoundary":       float64(1),
+		"projectionRevision": float64(3),
+	} {
+		if projection[key] != expected {
+			t.Fatalf("unexpected switched projection %s: got %#v, want %#v", key, projection[key], expected)
+		}
+	}
+	for _, rawAction := range projection["actions"].([]interface{}) {
+		action := rawAction.(map[string]interface{})
+		if action["type"] == "clue" {
+			t.Fatalf("historical boundary 0 included the boundary-1 clue: %#v", projection["actions"])
+		}
+	}
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	if table.Game.Turn != 1 || table.Game.ActivePlayerIndex != 1 {
+		t.Fatalf("perspective switch mutated the authoritative game: turn=%d active=%d", table.Game.Turn, table.Game.ActivePlayerIndex)
+	}
+}
+
+func TestUnifiedPerspectiveResolverFailureDoesNotCommitControllerState(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	targetRank := table.Game.Players[1].Hand[0].Rank
+	authoritativeActor := table.Players[0].Session
+	table.Unlock(nil)
+	commandAction(context.Background(), authoritativeActor, &CommandData{
+		TableID: created.TableID,
+		Type:    ActionTypeRankClue,
+		Target:  1,
+		Value:   targetRank,
+	})
+	table.Lock(nil)
+	table.ResearchUnifiedController.ActionCutoffs = nil
+	table.Unlock(nil)
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandResearchPerspective(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		UnifiedViewedSeat:          researchIntPtr(0),
+		UnifiedSelectedBoundary:    researchIntPtr(0),
+		ExpectedProjectionRevision: researchUint64Ptr(2),
+	})
+
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	controller, _ := table.researchUnifiedController(viewer.UserID)
+	if controller.ViewedSeat != 1 || controller.SelectedBoundary != 1 ||
+		controller.ProjectionRevision != 2 {
+		t.Fatalf("failed perspective resolution committed controller state: %#v", controller)
+	}
+	spectatorIndex := table.GetSpectatorIndexFromID(viewer.UserID)
+	if spectatorIndex < 0 || table.Spectators[spectatorIndex].ShadowingPlayerIndex != 1 {
+		t.Fatalf("failed perspective resolution committed spectator shadowing: %#v", table.Spectators)
+	}
+	if len(outbound.messages) != 1 || !strings.Contains(outbound.messages[0], "boundary is unavailable") {
+		t.Fatalf("resolver failure was not reported: %#v", outbound.messages)
+	}
+}
+
+func TestUnifiedPerspectiveDeliveryFailureDoesNotCommitControllerState(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+	outbound.writeErr = errors.New("closed websocket")
+
+	commandResearchPerspective(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		UnifiedViewedSeat:          researchIntPtr(1),
+		UnifiedSelectedBoundary:    researchIntPtr(0),
+		ExpectedProjectionRevision: researchUint64Ptr(1),
+	})
+	outbound.writeErr = nil
+
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	controller, _ := table.researchUnifiedController(viewer.UserID)
+	if controller.ViewedSeat != 0 || controller.SelectedBoundary != 0 ||
+		controller.ProjectionRevision != 1 {
+		t.Fatalf("failed perspective delivery committed controller state: %#v", controller)
+	}
+	spectatorIndex := table.GetSpectatorIndexFromID(viewer.UserID)
+	if spectatorIndex < 0 || table.Spectators[spectatorIndex].ShadowingPlayerIndex != 0 {
+		t.Fatalf("failed perspective delivery committed spectator shadowing: %#v", table.Spectators)
+	}
+	if len(outbound.messages) != 0 {
+		t.Fatalf("failed perspective delivery recorded an envelope: %#v", outbound.messages)
+	}
+}
+
+func TestUnifiedOffTurnPerspectiveCannotSubmitAnAction(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	commandResearchPerspective(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		UnifiedViewedSeat:          researchIntPtr(1),
+		UnifiedSelectedBoundary:    researchIntPtr(0),
+		ExpectedProjectionRevision: researchUint64Ptr(1),
+	})
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	turnBefore := table.Game.Turn
+	actionsBefore := len(table.Game.Actions)
+	targetRank := table.Game.Players[1].Hand[0].Rank
+	table.Unlock(nil)
+
+	commandAction(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		Type:                       ActionTypeRankClue,
+		Target:                     1,
+		Value:                      targetRank,
+		ExpectedActorSeat:          researchIntPtr(0),
+		ExpectedLiveBoundary:       researchIntPtr(0),
+		ExpectedProjectionRevision: researchUint64Ptr(2),
+	})
+
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	if table.Game.Turn != turnBefore || len(table.Game.Actions) != actionsBefore {
+		t.Fatal("off-turn perspective submitted an action")
+	}
+	if len(outbound.messages) != 1 || !strings.Contains(outbound.messages[0], "does not match the active projection") {
+		t.Fatalf("off-turn action did not explain the perspective mismatch: %#v", outbound.messages)
+	}
+}
+
+func TestUnifiedActionRequiresCurrentActorBoundaryAndProjectionRevision(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	targetRank := table.Game.Players[1].Hand[0].Rank
+	table.Unlock(nil)
+
+	commandAction(context.Background(), viewer, &CommandData{
+		TableID: created.TableID,
+		Type:    ActionTypeRankClue,
+		Target:  1,
+		Value:   targetRank,
+	})
+	table.Lock(nil)
+	if table.Game.Turn != 0 {
+		table.Unlock(nil)
+		t.Fatal("unbound unified action mutated the game")
+	}
+	table.Unlock(nil)
+
+	expectedActorSeat := 0
+	expectedLiveBoundary := 0
+	expectedProjectionRevision := uint64(1)
+	commandAction(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		Type:                       ActionTypeRankClue,
+		Target:                     1,
+		Value:                      targetRank,
+		ExpectedActorSeat:          &expectedActorSeat,
+		ExpectedLiveBoundary:       &expectedLiveBoundary,
+		ExpectedProjectionRevision: &expectedProjectionRevision,
+	})
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	if table.Game.Turn != 1 || len(table.Game.Actions2) != 1 {
+		t.Fatalf("exactly bound unified action was not accepted: turn=%d actions=%d", table.Game.Turn, len(table.Game.Actions2))
+	}
+}
+
+func TestAcceptedUnifiedActionEmitsOnlyTheNextAtomicProjection(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	targetRank := table.Game.Players[1].Hand[0].Rank
+	table.Unlock(nil)
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+	expectedActorSeat := 0
+	expectedLiveBoundary := 0
+	expectedProjectionRevision := uint64(1)
+
+	commandAction(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		Type:                       ActionTypeRankClue,
+		Target:                     1,
+		Value:                      targetRank,
+		ExpectedActorSeat:          &expectedActorSeat,
+		ExpectedLiveBoundary:       &expectedLiveBoundary,
+		ExpectedProjectionRevision: &expectedProjectionRevision,
+	})
+
+	projection := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
+	for key, expected := range map[string]interface{}{
+		"viewedSeat":         float64(1),
+		"currentTurnSeat":    float64(1),
+		"selectedBoundary":   float64(1),
+		"liveBoundary":       float64(1),
+		"projectionRevision": float64(2),
+	} {
+		if projection[key] != expected {
+			t.Fatalf("unexpected followed projection %s: got %#v, want %#v", key, projection[key], expected)
+		}
+	}
+	for _, message := range outbound.messages {
+		if strings.HasPrefix(message, "gameAction ") {
+			t.Fatalf("unified action leaked a non-atomic gameAction message: %#v", outbound.messages)
+		}
+	}
+}
+
+func TestUnifiedProjectionFollowsAnAuthoritativeServerSideAction(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	targetRank := table.Game.Players[1].Hand[0].Rank
+	authoritativeActor := table.Players[0].Session
+	table.Unlock(nil)
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandAction(context.Background(), authoritativeActor, &CommandData{
+		TableID: created.TableID,
+		Type:    ActionTypeRankClue,
+		Target:  1,
+		Value:   targetRank,
+	})
+
+	projection := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
+	if projection["viewedSeat"] != float64(1) ||
+		projection["selectedBoundary"] != float64(1) ||
+		projection["projectionRevision"] != float64(2) {
+		t.Fatalf("server-side action did not advance the unified projection: %#v", projection)
+	}
+}
+
+func TestDelayedDuplicateUnifiedActionCannotBecomeTheNextPlayersAction(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	targetRank := table.Game.Players[1].Hand[0].Rank
+	table.Unlock(nil)
+	expectedActorSeat := 0
+	expectedLiveBoundary := 0
+	expectedProjectionRevision := uint64(1)
+	actionRequest := &CommandData{
+		TableID:                    created.TableID,
+		Type:                       ActionTypeRankClue,
+		Target:                     1,
+		Value:                      targetRank,
+		ExpectedActorSeat:          &expectedActorSeat,
+		ExpectedLiveBoundary:       &expectedLiveBoundary,
+		ExpectedProjectionRevision: &expectedProjectionRevision,
+	}
+
+	commandAction(context.Background(), viewer, actionRequest)
+	table.Lock(nil)
+	actionsAfterFirst := len(table.Game.Actions2)
+	table.Unlock(nil)
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+	commandAction(context.Background(), viewer, actionRequest)
+
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	if table.Game.Turn != 1 || table.Game.ActivePlayerIndex != 1 ||
+		len(table.Game.Actions2) != actionsAfterFirst {
+		t.Fatalf(
+			"delayed duplicate mutated the next turn: turn=%d active=%d actions=%d",
+			table.Game.Turn,
+			table.Game.ActivePlayerIndex,
+			len(table.Game.Actions2),
+		)
+	}
+	if len(outbound.messages) != 1 ||
+		!strings.Contains(outbound.messages[0], "does not match the active projection") {
+		t.Fatalf("delayed duplicate was not rejected as stale: %#v", outbound.messages)
+	}
+}
+
+func TestUnifiedCurrentPlayerActionAutomaticallyFollowsTheNextTurn(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	targetRank := table.Game.Players[1].Hand[0].Rank
+	table.Unlock(nil)
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandAction(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		Type:                       ActionTypeRankClue,
+		Target:                     1,
+		Value:                      targetRank,
+		ExpectedActorSeat:          researchIntPtr(0),
+		ExpectedLiveBoundary:       researchIntPtr(0),
+		ExpectedProjectionRevision: researchUint64Ptr(1),
+	})
+
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	if table.Game.ActivePlayerIndex != 1 || table.Game.Turn != 1 {
+		t.Fatalf("current player action did not advance normally: turn=%d active=%d", table.Game.Turn, table.Game.ActivePlayerIndex)
+	}
+	spectatorIndex := table.GetSpectatorIndexFromID(viewer.UserID)
+	controller, unified := table.researchUnifiedController(viewer.UserID)
+	if !unified || controller.ViewedSeat != 1 || spectatorIndex < 0 ||
+		table.Spectators[spectatorIndex].ShadowingPlayerIndex != 1 {
+		t.Fatalf("unified view did not follow the next current player: controller=%#v spectators=%#v", controller, table.Spectators)
+	}
+	followed := false
+	for _, message := range outbound.messages {
+		followed = followed || strings.HasPrefix(message, "researchUnifiedProjection ")
+	}
+	if !followed {
+		t.Fatalf("current player action did not request UI reprojection: %#v", outbound.messages)
+	}
+}
+
+func TestUnifiedPerspectiveSurvivesTheUIReprojectionReconnect(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	targetRank := table.Game.Players[1].Hand[0].Rank
+	table.Unlock(nil)
+	expectedActorSeat := 0
+	expectedLiveBoundary := 0
+	expectedRevision := uint64(1)
+	commandAction(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		Type:                       ActionTypeRankClue,
+		Target:                     1,
+		Value:                      targetRank,
+		ExpectedActorSeat:          &expectedActorSeat,
+		ExpectedLiveBoundary:       &expectedLiveBoundary,
+		ExpectedProjectionRevision: &expectedRevision,
+	})
+	viewedSeat := 0
+	selectedBoundary := 0
+	expectedRevision = 2
+	commandResearchPerspective(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		UnifiedViewedSeat:          &viewedSeat,
+		UnifiedSelectedBoundary:    &selectedBoundary,
+		ExpectedProjectionRevision: &expectedRevision,
+	})
+
+	reconnected := researchHSMTestViewer(join)
+	researchHandleGuestConnected(reconnected)
+	outbound := reconnected.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+	commandGetGameInfo2(context.Background(), reconnected, &CommandData{TableID: created.TableID})
+	projection := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
+
+	for key, expected := range map[string]interface{}{
+		"viewedSeat":         float64(0),
+		"selectedBoundary":   float64(0),
+		"liveBoundary":       float64(1),
+		"projectionRevision": float64(3),
+	} {
+		if projection[key] != expected {
+			t.Fatalf("reconnection lost %s: got %#v, want %#v", key, projection[key], expected)
+		}
+	}
+}
+
+func TestSupersededUnifiedConnectionCannotSwitchPerspective(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	first := researchHSMTestViewer(join)
+	researchHandleGuestConnected(first)
+	second := researchHSMTestViewer(join)
+	researchHandleGuestConnected(second)
+	firstOutbound := first.outbound.(*researchRecordingOutbound)
+	secondOutbound := second.outbound.(*researchRecordingOutbound)
+	firstOutbound.messages = nil
+	secondOutbound.messages = nil
+
+	commandResearchPerspective(context.Background(), first, &CommandData{
+		TableID:                    created.TableID,
+		UnifiedViewedSeat:          researchIntPtr(1),
+		UnifiedSelectedBoundary:    researchIntPtr(0),
+		ExpectedProjectionRevision: researchUint64Ptr(1),
+	})
+
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	controller, _ := table.researchUnifiedController(first.UserID)
+	if controller.ViewedSeat != 0 || controller.ProjectionRevision != 1 {
+		t.Fatalf("superseded connection changed controller state: %#v", controller)
+	}
+	if len(secondOutbound.messages) != 0 {
+		t.Fatalf("active connection received a projection caused by a superseded socket: %#v", secondOutbound.messages)
+	}
+	if len(firstOutbound.messages) != 1 ||
+		!strings.Contains(firstOutbound.messages[0], "no longer the active unified connection") {
+		t.Fatalf("superseded connection was not rejected explicitly: %#v", firstOutbound.messages)
+	}
+}
+
+func TestSupersededUnifiedConnectionCannotSubmitAnAction(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	first := researchHSMTestViewer(join)
+	researchHandleGuestConnected(first)
+	second := researchHSMTestViewer(join)
+	researchHandleGuestConnected(second)
+	firstOutbound := first.outbound.(*researchRecordingOutbound)
+	firstOutbound.messages = nil
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	targetRank := table.Game.Players[1].Hand[0].Rank
+	actionsBefore := len(table.Game.Actions2)
+	table.Unlock(nil)
+
+	commandAction(context.Background(), first, &CommandData{
+		TableID:                    created.TableID,
+		Type:                       ActionTypeRankClue,
+		Target:                     1,
+		Value:                      targetRank,
+		ExpectedActorSeat:          researchIntPtr(0),
+		ExpectedLiveBoundary:       researchIntPtr(0),
+		ExpectedProjectionRevision: researchUint64Ptr(1),
+	})
+
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	if table.Game.Turn != 0 || len(table.Game.Actions2) != actionsBefore {
+		t.Fatal("superseded unified connection mutated the authoritative game")
+	}
+	if len(firstOutbound.messages) != 1 ||
+		!strings.Contains(firstOutbound.messages[0], "no longer the active unified connection") {
+		t.Fatalf("superseded action was not rejected explicitly: %#v", firstOutbound.messages)
+	}
+}
+
+func TestSupersededUnifiedConnectionCannotFetchAProjection(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	first := researchHSMTestViewer(join)
+	researchHandleGuestConnected(first)
+	second := researchHSMTestViewer(join)
+	researchHandleGuestConnected(second)
+	outbound := first.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandGetGameInfo2(context.Background(), first, &CommandData{TableID: created.TableID})
+
+	if len(outbound.messages) != 1 ||
+		!strings.Contains(outbound.messages[0], "no longer the active unified connection") {
+		t.Fatalf("superseded connection retained projection authority: %#v", outbound.messages)
+	}
+}
+
+func TestSupersededUnifiedConnectionCannotReinitializeTheController(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	first := researchHSMTestViewer(join)
+	researchHandleGuestConnected(first)
+	second := researchHSMTestViewer(join)
+	researchHandleGuestConnected(second)
+	outbound := first.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandGetGameInfo1(context.Background(), first, &CommandData{TableID: created.TableID})
+
+	if len(outbound.messages) != 1 ||
+		!strings.Contains(outbound.messages[0], "no longer the active unified connection") {
+		t.Fatalf("superseded connection retained initialization authority: %#v", outbound.messages)
+	}
+}
+
+func TestSupersededUnifiedConnectionCannotPauseTheGame(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	first := researchHSMTestViewer(join)
+	researchHandleGuestConnected(first)
+	second := researchHSMTestViewer(join)
+	researchHandleGuestConnected(second)
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	table.Options.Timed = true
+	table.Unlock(nil)
+	outbound := first.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandPause(context.Background(), first, &CommandData{
+		TableID: created.TableID,
+		Setting: "pause",
+	})
+
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	if table.Game.Paused {
+		t.Fatal("superseded unified connection paused the game")
+	}
+	if len(outbound.messages) != 1 ||
+		!strings.Contains(outbound.messages[0], "no longer the active unified connection") {
+		t.Fatalf("superseded pause was not rejected explicitly: %#v", outbound.messages)
+	}
+}
+
+func TestSupersededUnifiedConnectionCannotTerminateTheGame(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	first := researchHSMTestViewer(join)
+	researchHandleGuestConnected(first)
+	second := researchHSMTestViewer(join)
+	researchHandleGuestConnected(second)
+	outbound := first.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandTableTerminate(context.Background(), first, &CommandData{TableID: created.TableID})
+
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	if table.Game.EndCondition != EndConditionInProgress {
+		t.Fatalf("superseded unified connection terminated the game: %d", table.Game.EndCondition)
+	}
+	if len(outbound.messages) != 1 ||
+		!strings.Contains(outbound.messages[0], "no longer the active unified connection") {
+		t.Fatalf("superseded termination was not rejected explicitly: %#v", outbound.messages)
+	}
+}
+
+func TestSupersededUnifiedConnectionCannotRequestRestart(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	first := researchHSMTestViewer(join)
+	researchHandleGuestConnected(first)
+	second := researchHSMTestViewer(join)
+	researchHandleGuestConnected(second)
+	outbound := first.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandResearchRestart(context.Background(), first, &CommandData{
+		TableID:     created.TableID,
+		RestartKind: researchRestartSameSeed,
+	})
+
+	researchSessionsMutex.Lock()
+	pending := researchSessions[created.GameID].PendingRestartRequest
+	researchSessionsMutex.Unlock()
+	if pending != nil {
+		t.Fatalf("superseded unified connection created a restart request: %#v", pending)
+	}
+	if len(outbound.messages) != 1 ||
+		!strings.Contains(outbound.messages[0], "no longer the active unified connection") {
+		t.Fatalf("superseded restart was not rejected explicitly: %#v", outbound.messages)
+	}
+}
+
+func TestSupersededUnifiedConnectionCannotMarkManualSeatsLoaded(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	first := researchHSMTestViewer(join)
+	researchHandleGuestConnected(first)
+	second := researchHSMTestViewer(join)
+	researchHandleGuestConnected(second)
+	outbound := first.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandLoaded(context.Background(), first, &CommandData{TableID: created.TableID})
+
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	for seat, player := range table.Players {
+		if player.Present {
+			t.Fatalf("superseded connection marked manual seat %d loaded", seat)
+		}
+	}
+	if len(outbound.messages) != 1 ||
+		!strings.Contains(outbound.messages[0], "no longer the active unified connection") {
+		t.Fatalf("superseded loaded command was not rejected explicitly: %#v", outbound.messages)
+	}
+}
+
+func TestSupersededUnifiedConnectionCannotReattachItselfAsController(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	first := researchHSMTestViewer(join)
+	researchHandleGuestConnected(first)
+	second := researchHSMTestViewer(join)
+	researchHandleGuestConnected(second)
+	outbound := first.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandTableSpectate(context.Background(), first, &CommandData{
+		TableID:              created.TableID,
+		ShadowingPlayerIndex: 0,
+	})
+
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	spectatorIndex := table.GetSpectatorIndexFromID(first.UserID)
+	if spectatorIndex < 0 || table.Spectators[spectatorIndex].Session != second {
+		t.Fatalf("superseded connection reclaimed controller attachment: %#v", table.Spectators)
+	}
+	if len(outbound.messages) != 1 ||
+		!strings.Contains(outbound.messages[0], "unified controller attachment is server-managed") {
+		t.Fatalf("direct unified reattachment was not rejected explicitly: %#v", outbound.messages)
+	}
+}
+
+func TestUnifiedPerspectiveDoesNotAcquireTheResearchRegistryUnderTheTableLock(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	done := make(chan struct{})
+	researchSessionsMutex.Lock()
+	go func() {
+		commandResearchPerspective(context.Background(), viewer, &CommandData{
+			TableID:                    created.TableID,
+			UnifiedViewedSeat:          researchIntPtr(1),
+			UnifiedSelectedBoundary:    researchIntPtr(0),
+			ExpectedProjectionRevision: researchUint64Ptr(1),
+		})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		researchSessionsMutex.Unlock()
+	case <-time.After(time.Second):
+		researchSessionsMutex.Unlock()
+		<-done
+		t.Fatal("unified perspective attempted a table-lock to research-registry lock inversion")
+	}
+}
+
+func TestUnifiedGameInfoReprojectsPrivateCardsAndNotesForTheViewedSeat(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+
+	assertProjection := func(viewedSeat int) {
+		t.Helper()
+		outbound.messages = nil
+		commandGetGameInfo2(context.Background(), viewer, &CommandData{TableID: created.TableID})
+		projection := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
+		if projection["viewedSeat"] != float64(viewedSeat) {
+			t.Fatalf("received projection for the wrong viewed seat: %#v", projection)
+		}
+		seenHiddenSelf := false
+		seenVisibleOther := false
+		for _, rawAction := range projection["actions"].([]interface{}) {
+			action := rawAction.(map[string]interface{})
+			if action["type"] != "draw" {
+				continue
+			}
+			playerIndex, _ := action["playerIndex"].(float64)
+			rank, _ := action["rank"].(float64)
+			if int(playerIndex) == viewedSeat && rank == -1 {
+				seenHiddenSelf = true
+			}
+			if int(playerIndex) != viewedSeat && rank >= 0 {
+				seenVisibleOther = true
+			}
+		}
+		if !seenHiddenSelf || !seenVisibleOther {
+			t.Fatalf("viewed seat %d received the wrong private card projection: %#v", viewedSeat, projection["actions"])
+		}
+	}
+
+	assertProjection(0)
+	commandResearchPerspective(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		UnifiedViewedSeat:          researchIntPtr(1),
+		UnifiedSelectedBoundary:    researchIntPtr(0),
+		ExpectedProjectionRevision: researchUint64Ptr(1),
+	})
+	assertProjection(1)
+}
+
+func TestUnifiedGameInfoReturnsOneCompleteServerScrubbedProjection(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	table.Game.Players[0].Notes[0] = "Alice private note"
+	table.Game.Players[1].Notes[0] = "Bob private note"
+	table.Unlock(nil)
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandGetGameInfo2(context.Background(), viewer, &CommandData{TableID: created.TableID})
+
+	projection := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
+	for key, expected := range map[string]interface{}{
+		"tableID":            float64(created.TableID),
+		"viewedSeat":         float64(0),
+		"currentTurnSeat":    float64(0),
+		"selectedBoundary":   float64(0),
+		"liveBoundary":       float64(0),
+		"projectionRevision": float64(1),
+		"finished":           false,
+	} {
+		if projection[key] != expected {
+			t.Fatalf("unexpected projection %s: got %#v, want %#v", key, projection[key], expected)
+		}
+	}
+	notes, ok := projection["notes"].([]interface{})
+	if !ok || len(notes) == 0 || notes[0] != "Alice private note" {
+		t.Fatalf("projection did not include only the viewed player's notes: %#v", projection["notes"])
+	}
+	actions, ok := projection["actions"].([]interface{})
+	if !ok || len(actions) == 0 {
+		t.Fatalf("projection did not include action history: %#v", projection["actions"])
+	}
+	seenHiddenSelf := false
+	seenVisibleOther := false
+	for _, rawAction := range actions {
+		action, ok := rawAction.(map[string]interface{})
+		if !ok || action["type"] != "draw" {
+			continue
+		}
+		playerIndex, _ := action["playerIndex"].(float64)
+		rank, _ := action["rank"].(float64)
+		if playerIndex == 0 && rank == -1 {
+			seenHiddenSelf = true
+		}
+		if playerIndex == 1 && rank >= 0 {
+			seenVisibleOther = true
+		}
+	}
+	if !seenHiddenSelf || !seenVisibleOther {
+		t.Fatalf("projection was not scrubbed for seat 0: %#v", actions)
+	}
+	for _, message := range outbound.messages {
+		if strings.HasPrefix(message, "gameActionList ") || strings.HasPrefix(message, "noteListPlayer ") {
+			t.Fatalf("unified projection leaked through an ordinary projection message: %q", message)
+		}
+	}
+}
+
+func TestUnifiedGameInfoInstallsProjectionBeforeSharedLiveNotifications(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandGetGameInfo2(context.Background(), viewer, &CommandData{TableID: created.TableID})
+
+	if len(outbound.messages) != 3 ||
+		!strings.HasPrefix(outbound.messages[0], "researchUnifiedProjection ") ||
+		!strings.HasPrefix(outbound.messages[1], "connected ") ||
+		!strings.HasPrefix(outbound.messages[2], "clock ") {
+		t.Fatalf("unified game info did not open its loading gate before live notifications: %#v", outbound.messages)
+	}
+}
+
+func TestUnifiedNoteEditUpdatesAndNotifiesOnlyTheViewedPlayersNotes(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	table.Game.Players[0].Notes[0] = "Alice old note"
+	table.Game.Players[1].Notes[0] = "Bob note"
+	table.Unlock(nil)
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandNote(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		Order:                      0,
+		Note:                       "Alice new note",
+		ExpectedViewedSeat:         researchIntPtr(0),
+		ExpectedProjectionRevision: researchUint64Ptr(1),
+	})
+
+	projection := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
+	if projection["projectionRevision"] != float64(2) {
+		t.Fatalf("note edit did not revise the unified projection: %#v", projection)
+	}
+	notes := projection["notes"].([]interface{})
+	if notes[0] != "Alice new note" {
+		t.Fatalf("note edit did not update the viewed player's note set: %#v", notes)
+	}
+	for _, message := range outbound.messages {
+		if strings.HasPrefix(message, "note ") {
+			t.Fatalf("unified note edit leaked an unrevisioned note message: %#v", outbound.messages)
+		}
+	}
+
+	viewedSeat := 1
+	selectedBoundary := 0
+	expectedRevision := uint64(2)
+	outbound.messages = nil
+	commandResearchPerspective(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		UnifiedViewedSeat:          &viewedSeat,
+		UnifiedSelectedBoundary:    &selectedBoundary,
+		ExpectedProjectionRevision: &expectedRevision,
+	})
+	bobProjection := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
+	bobNotes := bobProjection["notes"].([]interface{})
+	if bobNotes[0] != "Bob note" {
+		t.Fatalf("Alice's edit leaked into Bob's notes: %#v", bobNotes)
+	}
+}
+
+func TestUnifiedNoteRejectsTheProjectionThatWasSupersededByPerspectiveSwitch(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	commandResearchPerspective(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		UnifiedViewedSeat:          researchIntPtr(1),
+		UnifiedSelectedBoundary:    researchIntPtr(0),
+		ExpectedProjectionRevision: researchUint64Ptr(1),
+	})
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandNote(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		Order:                      0,
+		Note:                       "stale Alice note",
+		ExpectedViewedSeat:         researchIntPtr(0),
+		ExpectedProjectionRevision: researchUint64Ptr(1),
+	})
+
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	controller, _ := table.researchUnifiedController(viewer.UserID)
+	if table.Game.Players[0].Notes[0] != "" || table.Game.Players[1].Notes[0] != "" {
+		t.Fatalf("stale note mutated a viewed-player note set: %#v", table.Game.Players)
+	}
+	if controller.ProjectionRevision != 2 {
+		t.Fatalf("rejected note revised the projection: %#v", controller)
+	}
+	if len(outbound.messages) != 1 ||
+		!strings.Contains(outbound.messages[0], "does not match the active unified projection") {
+		t.Fatalf("stale note was not rejected explicitly: %#v", outbound.messages)
+	}
+}
+
+func TestUnifiedLoadedBrowserKeepsEveryManualSeatPresent(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+
+	commandLoaded(context.Background(), viewer, &CommandData{TableID: created.TableID})
+
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	for seat, player := range table.Players {
+		if !player.Present {
+			t.Fatalf("unified manual seat %d was displayed as disconnected", seat)
+		}
+	}
+}
+
+func TestUnifiedPauseCapabilityMatchesServerAuthorization(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	table.Options.Timed = true
+	table.Unlock(nil)
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandGetGameInfo2(context.Background(), viewer, &CommandData{TableID: created.TableID})
+	projection := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
+	capabilities := projection["capabilities"].(map[string]interface{})
+	if capabilities["canPause"] != true {
+		t.Fatalf("timed unified game did not advertise pause authority: %#v", capabilities)
+	}
+	outbound.messages = nil
+
+	commandPause(context.Background(), viewer, &CommandData{
+		TableID: created.TableID,
+		Setting: "pause",
+	})
+
+	pausedProjection := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
+	if pausedProjection["projectionRevision"] != float64(2) {
+		t.Fatalf("pause did not atomically revise the projection: %#v", pausedProjection)
+	}
+	if pausedProjection["paused"] != true || pausedProjection["pausePlayerIndex"] != float64(0) {
+		t.Fatalf("projection did not atomically include the paused state: %#v", pausedProjection)
+	}
+	for _, message := range outbound.messages {
+		if strings.HasPrefix(message, "pause ") {
+			t.Fatalf("unified pause leaked an unrevisioned pause message: %#v", outbound.messages)
+		}
+	}
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	if !table.Game.Paused {
+		t.Fatal("advertised unified pause capability was rejected by the server")
+	}
+}
+
+func TestUnifiedProjectionTracksAnAuthoritativeServerSidePause(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	table.Options.Timed = true
+	authoritativeActor := table.Players[0].Session
+	table.Unlock(nil)
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandPause(context.Background(), authoritativeActor, &CommandData{
+		TableID: created.TableID,
+		Setting: "pause",
+	})
+
+	projection := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
+	capabilities := projection["capabilities"].(map[string]interface{})
+	if projection["projectionRevision"] != float64(2) || capabilities["canAct"] != false {
+		t.Fatalf("server-side pause did not revise unified capabilities: %#v", projection)
+	}
+}
+
+func TestUnifiedTerminateCapabilityMatchesServerAuthorization(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+	commandGetGameInfo2(context.Background(), viewer, &CommandData{TableID: created.TableID})
+	projection := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
+	capabilities := projection["capabilities"].(map[string]interface{})
+	if capabilities["canTerminate"] != true {
+		t.Fatalf("unified game did not advertise termination authority: %#v", capabilities)
+	}
+	outbound.messages = nil
+
+	commandTableTerminate(context.Background(), viewer, &CommandData{TableID: created.TableID})
+
+	terminatedProjection := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
+	if terminatedProjection["finished"] != true {
+		t.Fatalf("terminal unified projection did not declare completion: %#v", terminatedProjection)
+	}
+	terminatedCapabilities := terminatedProjection["capabilities"].(map[string]interface{})
+	if terminatedCapabilities["canTerminate"] != false {
+		t.Fatalf("terminated projection retained termination authority: %#v", terminatedCapabilities)
+	}
+	cardIdentities, ok := terminatedProjection["cardIdentities"].([]interface{})
+	if !ok || len(cardIdentities) == 0 {
+		t.Fatalf("terminal unified projection omitted the ordinary end-game reveal: %#v", terminatedProjection)
+	}
+	for _, message := range outbound.messages {
+		if strings.HasPrefix(message, "gameAction ") ||
+			strings.HasPrefix(message, "cardIdentities ") ||
+			strings.HasPrefix(message, "finishOngoingGame ") {
+			t.Fatalf("unified termination leaked an unrevisioned projection message: %#v", outbound.messages)
+		}
+	}
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	if table.Game.EndCondition != EndConditionTerminatedByPlayer {
+		t.Fatalf("advertised unified terminate capability was rejected: %d", table.Game.EndCondition)
+	}
+}
+
+func TestUnifiedTerminationVoteBelongsToTheViewedPlayerProjection(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandTableVoteForTermination(context.Background(), viewer, &CommandData{TableID: created.TableID})
+
+	aliceProjection := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
+	if aliceProjection["projectionRevision"] != float64(2) || aliceProjection["terminationVote"] != true {
+		t.Fatalf("unified vote was not installed atomically for Alice: %#v", aliceProjection)
+	}
+	for _, message := range outbound.messages {
+		if strings.HasPrefix(message, "voteChange ") {
+			t.Fatalf("unified vote leaked an unrevisioned vote fragment: %#v", outbound.messages)
+		}
+	}
+
+	outbound.messages = nil
+	commandResearchPerspective(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		UnifiedViewedSeat:          researchIntPtr(1),
+		UnifiedSelectedBoundary:    researchIntPtr(0),
+		ExpectedProjectionRevision: researchUint64Ptr(2),
+	})
+	bobProjection := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
+	if bobProjection["terminationVote"] != false {
+		t.Fatalf("Alice's termination vote leaked into Bob's projection: %#v", bobProjection)
+	}
+
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	if !table.Players[0].VoteToKill || table.Players[1].VoteToKill {
+		t.Fatalf("unified vote did not belong to the viewed physical seat: %#v", table.Players)
+	}
+	if table.Game.EndCondition != EndConditionInProgress {
+		t.Fatalf("one vote unexpectedly terminated a two-player game: %d", table.Game.EndCondition)
+	}
+}
+
+func TestUnifiedControllerDoesNotReceiveLegacyFinishOngoingGame(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	table.NotifyFinishOngoingGame()
+	table.Unlock(nil)
+
+	for _, message := range outbound.messages {
+		if strings.HasPrefix(message, "finishOngoingGame ") {
+			t.Fatalf("unified controller received legacy replay navigation: %#v", outbound.messages)
+		}
+	}
+}
+
+func TestRegularManualPlayerProtocolRemainsUnchanged(t *testing.T) {
+	researchTestInit(t)
+	router := researchTestRouter()
+	payload := researchUnifiedTwoPlayerPayload()
+	payload.Unified = false
+	response := researchJSONRequest(t, router, http.MethodPost, "/research/single-game", payload, "secret")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected regular game 201, got %d: %s", response.Code, response.Body.String())
+	}
+	var created CreatedResearchSingleGame
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to parse regular create response: %v", err)
+	}
+	firstJoin := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
+	secondJoin := researchJoinTokens[path.Base(created.JoinLinks["roster_player_1"])]
+	first := researchHSMTestViewer(firstJoin)
+	second := researchHSMTestViewer(secondJoin)
+	researchHandleGuestConnected(first)
+	researchHandleGuestConnected(second)
+	firstOutbound := first.outbound.(*researchRecordingOutbound)
+	firstOutbound.messages = nil
+	commandGetGameInfo1(context.Background(), first, &CommandData{TableID: created.TableID})
+	initMessage := researchOnlyOutboundPayload(t, firstOutbound.messages, "init")
+	if _, exists := initMessage["unifiedController"]; exists || initMessage["researchUnified"] == true {
+		t.Fatalf("regular player received unified protocol state: %#v", initMessage)
+	}
+	if initMessage["spectating"] != false {
+		t.Fatalf("regular player no longer had ordinary playing semantics: %#v", initMessage)
+	}
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	targetRank := table.Game.Players[1].Hand[0].Rank
+	table.Unlock(nil)
+
+	commandAction(context.Background(), first, &CommandData{
+		TableID: created.TableID,
+		Type:    ActionTypeRankClue,
+		Target:  1,
+		Value:   targetRank,
+	})
+
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	if table.Game.Turn != 1 || table.Game.ActivePlayerIndex != 1 {
+		t.Fatalf("regular action unexpectedly required a unified envelope: turn=%d active=%d", table.Game.Turn, table.Game.ActivePlayerIndex)
+	}
+}
+
+func TestRegularPlayerNoteDoesNotRequireAUnifiedProjectionEnvelope(t *testing.T) {
+	researchTestInit(t)
+	router := researchTestRouter()
+	payload := researchUnifiedTwoPlayerPayload()
+	payload.Unified = false
+	response := researchJSONRequest(t, router, http.MethodPost, "/research/single-game", payload, "secret")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected regular game 201, got %d: %s", response.Code, response.Body.String())
+	}
+	var created CreatedResearchSingleGame
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to parse regular create response: %v", err)
+	}
+	firstJoin := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
+	secondJoin := researchJoinTokens[path.Base(created.JoinLinks["roster_player_1"])]
+	first := researchHSMTestViewer(firstJoin)
+	second := researchHSMTestViewer(secondJoin)
+	researchHandleGuestConnected(first)
+	researchHandleGuestConnected(second)
+
+	commandNote(context.Background(), first, &CommandData{
+		TableID: created.TableID,
+		Order:   0,
+		Note:    "ordinary player note",
+	})
+
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	if table.Game.Players[firstJoin.SeatIndex].Notes[0] != "ordinary player note" {
+		t.Fatalf("regular note unexpectedly required unified coordinates: %#v", table.Game.Players)
+	}
+}
+
+func TestRegularSpectatorStillReceivesOrdinaryIncrementalActions(t *testing.T) {
+	researchTestInit(t)
+	router := researchTestRouter()
+	payload := researchUnifiedTwoPlayerPayload()
+	payload.Unified = false
+	response := researchJSONRequest(t, router, http.MethodPost, "/research/single-game", payload, "secret")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected regular game 201, got %d: %s", response.Code, response.Body.String())
+	}
+	var created CreatedResearchSingleGame
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to parse regular create response: %v", err)
+	}
+	first := researchHSMTestViewer(researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])])
+	second := researchHSMTestViewer(researchJoinTokens[path.Base(created.JoinLinks["roster_player_1"])])
+	researchHandleGuestConnected(first)
+	researchHandleGuestConnected(second)
+	spectator := NewFakeSession(424242, "Ordinary Spectator")
+	spectator.outbound = &researchRecordingOutbound{ready: true}
+	commandTableSpectate(context.Background(), spectator, &CommandData{
+		TableID:              created.TableID,
+		ShadowingPlayerIndex: -1,
+	})
+	outbound := spectator.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	targetRank := table.Game.Players[1].Hand[0].Rank
+	table.Unlock(nil)
+
+	commandAction(context.Background(), first, &CommandData{
+		TableID: created.TableID,
+		Type:    ActionTypeRankClue,
+		Target:  1,
+		Value:   targetRank,
+	})
+
+	hasGameAction := false
+	for _, message := range outbound.messages {
+		hasGameAction = hasGameAction || strings.HasPrefix(message, "gameAction ")
+	}
+	if !hasGameAction {
+		t.Fatalf("regular spectator stopped receiving ordinary incremental actions: %#v", outbound.messages)
+	}
+
+	outbound.messages = nil
+	table.Lock(nil)
+	table.NotifyFinishOngoingGame()
+	table.Unlock(nil)
+	if len(outbound.messages) != 1 || !strings.HasPrefix(outbound.messages[0], "finishOngoingGame ") {
+		t.Fatalf("regular spectator stopped receiving replay transition: %#v", outbound.messages)
+	}
+}
+
+func TestResearchPregameLayoutUpdateKeepsForcedControllerAndAppliesNewSeatOrder(t *testing.T) {
+	researchTestInit(t)
+	router := researchTestRouter()
+	payload := researchSingleGamePayload()
+	payload.Mode = "pregame_table"
+	payload.Game.GameIndex = 0
+	payload.Game.GameSeed = nil
+	payload.Game.IdentityDisplay = "seat_names"
+	payload.Game.SeatDisplayNames = []string{"Alice", "Bob"}
+	payload.RosterPlayers[0].RequiredSeat = researchIntPtr(0)
+	payload.ControllerSeatAssignments = map[string]string{
+		"roster_player_0": "seat_0",
+		"roster_player_1": "seat_1",
+	}
+
+	response := researchJSONRequest(t, router, http.MethodPost, "/research/pregame-table", payload, "secret")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	}
+	var created CreatedResearchPregameTable
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to parse create response: %v", err)
+	}
+	nextLayout := ResearchSeededInitialLayout{
+		DeckOrder: researchValidDeck(),
+		SeatOrder: []int{0, 1},
+		RosterPlayerToSeatID: map[string]string{
+			"0": "seat_0",
+			"1": "seat_1",
+		},
+	}
+	update := researchJSONRequest(
+		t,
+		router,
+		http.MethodPost,
+		"/research/sessions/"+created.TableID+"/current-game-layout",
+		map[string]interface{}{
+			"game_index":            0,
+			"game_seed":             100,
+			"seeded_initial_layout": nextLayout,
+			"controller_seat_assignments": map[string]string{
+				"roster_player_0": "seat_0",
+				"roster_player_1": "seat_1",
+			},
+		},
+		"secret",
+	)
+	if update.Code != http.StatusOK {
+		t.Fatalf("expected layout update 200, got %d: %s", update.Code, update.Body.String())
+	}
+	researchSessionsMutex.Lock()
+	session := researchSessions[created.TableID]
+	rosterIDs := append([]string(nil), session.RosterPlayerIDsBySeat...)
+	controllerIDs := append([]string(nil), session.ControllerRosterPlayerIDsBySeat...)
+	researchSessionsMutex.Unlock()
+	if !reflect.DeepEqual(rosterIDs, []string{"roster_player_0", "roster_player_1"}) {
+		t.Fatalf("new physical Seat Order was not applied: %#v", rosterIDs)
+	}
+	if !reflect.DeepEqual(controllerIDs, []string{"roster_player_0", "roster_player_1"}) {
+		t.Fatalf("forced controller seat changed: %#v", controllerIDs)
+	}
+	table, ok := tables.Get(session.TableID, true)
+	if !ok {
+		t.Fatalf("Pregame Table %d disappeared", session.TableID)
+	}
+	table.Lock(nil)
+	if table.Players[0].Name != "Alice" || table.Players[1].Name != "Bob" {
+		t.Fatalf("Pregame Table lost physical seat names: %#v", table.Players)
+	}
+	table.Unlock(nil)
 }
 
 func TestResearchControlAPIRejectsInvalidLayoutDetails(t *testing.T) {
@@ -2339,6 +4154,16 @@ func TestResearchBotActionEndpointAppliesLegalBotMove(t *testing.T) {
 	researchTestInit(t)
 	router := researchTestRouter()
 	payload := researchSingleGamePayload()
+	payload.SeededInitialLayout.SeatOrder = []int{0, 1}
+	payload.SeededInitialLayout.RosterPlayerToSeatID = map[string]string{
+		"0": "seat_0",
+		"1": "seat_1",
+	}
+	payload.RosterPlayers[0].RequiredSeat = researchIntPtr(1)
+	payload.ControllerSeatAssignments = map[string]string{
+		"roster_player_0": "seat_1",
+		"roster_player_1": "seat_0",
+	}
 
 	response := researchJSONRequest(
 		t,
@@ -2374,8 +4199,11 @@ func TestResearchBotActionEndpointAppliesLegalBotMove(t *testing.T) {
 	if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil {
 		t.Fatalf("failed to parse status response: %v", err)
 	}
-	if status["current_turn_roster_player_id"] != "roster_player_1" {
-		t.Fatalf("expected bot to take the first turn, got %#v", status["current_turn_roster_player_id"])
+	if status["current_turn_roster_player_id"] != "roster_player_0" {
+		t.Fatalf("expected physical Roster Player 0 to take the first turn, got %#v", status["current_turn_roster_player_id"])
+	}
+	if status["current_turn_controller_roster_player_id"] != "roster_player_1" {
+		t.Fatalf("expected bot controller to own the first turn, got %#v", status["current_turn_controller_roster_player_id"])
 	}
 	legalActions := status["legal_actions"].([]interface{})
 	if len(legalActions) == 0 {
@@ -2413,6 +4241,11 @@ func TestResearchControlAPIMintsBotJoinSession(t *testing.T) {
 	researchTestInit(t)
 	router := researchTestRouter()
 	payload := researchSingleGamePayload()
+	payload.RosterPlayers[0].RequiredSeat = researchIntPtr(0)
+	payload.ControllerSeatAssignments = map[string]string{
+		"roster_player_0": "seat_0",
+		"roster_player_1": "seat_1",
+	}
 
 	response := researchJSONRequest(
 		t,
@@ -2454,8 +4287,8 @@ func TestResearchControlAPIMintsBotJoinSession(t *testing.T) {
 	if joined.JoinCredential == "" {
 		t.Fatalf("expected non-empty join credential, got %#v", joined)
 	}
-	if joined.OurPlayerIndex != 0 {
-		t.Fatalf("expected bot to own seat index 0, got %#v", joined)
+	if joined.OurPlayerIndex != 1 {
+		t.Fatalf("expected bot controller to own seat index 1, got %#v", joined)
 	}
 	userID, username, ok := researchMagicJoinTokenCredentials(joined.JoinCredential)
 	if !ok {
@@ -2481,10 +4314,10 @@ func TestResearchControlAPIMintsBotJoinSession(t *testing.T) {
 		t.Fatalf("created table %d does not exist", created.TableID)
 	}
 	table.Lock(nil)
-	if table.Players[0].Session != realSession {
+	if table.Players[1].Session != realSession {
 		t.Fatal("native bot websocket session was not rebound to its reserved seat")
 	}
-	if !table.Players[0].Present {
+	if !table.Players[1].Present {
 		t.Fatal("native bot websocket session should keep its reserved seat present")
 	}
 	table.Unlock(nil)
@@ -2719,7 +4552,41 @@ func researchSingleGamePayload() ResearchCreatePayload {
 	}
 }
 
+func researchCreateUnifiedTwoPlayerGame(
+	t *testing.T,
+	router *gin.Engine,
+) (CreatedResearchSingleGame, *ResearchJoinToken) {
+	t.Helper()
+	payload := researchUnifiedTwoPlayerPayload()
+	response := researchJSONRequest(t, router, http.MethodPost, "/research/single-game", payload, "secret")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
+	}
+	var created CreatedResearchSingleGame
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatalf("failed to parse create response: %v", err)
+	}
+	return created, researchJoinTokens[path.Base(created.UnifiedJoinLink)]
+}
+
+func researchUnifiedTwoPlayerPayload() ResearchCreatePayload {
+	payload := researchSingleGamePayload()
+	payload.Unified = true
+	payload.SeededInitialLayout.SeatOrder = []int{0, 1}
+	payload.SeededInitialLayout.RosterPlayerToSeatID = map[string]string{"0": "seat_0", "1": "seat_1"}
+	payload.RosterPlayers[0].RequiredSeat = researchIntPtr(0)
+	payload.RosterPlayers[1].Type = "human"
+	payload.RosterPlayers[1].Location = "local"
+	payload.RosterPlayers[1].RequiredSeat = researchIntPtr(1)
+	payload.ControllerSeatAssignments = map[string]string{"roster_player_0": "seat_0", "roster_player_1": "seat_1"}
+	return payload
+}
+
 func researchIntPtr(value int) *int {
+	return &value
+}
+
+func researchUint64Ptr(value uint64) *uint64 {
 	return &value
 }
 
@@ -2785,13 +4652,13 @@ func researchValidHSMFailureForRequest(
 		SemanticProfileID:     request.SemanticProfileID,
 		LegalActionProjection: request.AuthorityLegalProjection.legality(),
 		UnsatisfiableCore: &ResearchHSMUnsatisfiableCore{
-			Valid:            []bool{},
-			CoordinateKind:   []int{},
-			TransitionIndex:  []int{},
-			RuleIndex:        []int{},
-			SubjectIndex:     []int{},
-			EvidenceBoundary: []int{},
-			ProvenanceID:     []int{},
+			SubsetMinimal:    true,
+			CoordinateKind:   []string{"stable_card"},
+			TransitionIndex:  []int{0},
+			RuleIndex:        []int{1},
+			SubjectIndex:     []int{12},
+			EvidenceBoundary: []int{request.EvidenceBoundary},
+			ProvenanceID:     []int{71},
 		},
 	}
 }

@@ -9,11 +9,12 @@ import (
 // commandPause is sent when the user pauses or unpauses the game
 //
 // Example data:
-// {
-//   tableID: 5,
-//   setting: 'pause', // Can also be 'unpause', 'pause-queue', 'pause-unqueue'
-//   // ('pause-queue' will automatically pause the game when it gets to their turn)
-// }
+//
+//	{
+//	  tableID: 5,
+//	  setting: 'pause', // Can also be 'unpause', 'pause-queue', 'pause-unqueue'
+//	  // ('pause-queue' will automatically pause the game when it gets to their turn)
+//	}
 func commandPause(ctx context.Context, s *Session, d *CommandData) {
 	t, exists := getTableAndLock(ctx, s, d.TableID, !d.NoTableLock, !d.NoTablesLock)
 	if !exists {
@@ -39,9 +40,21 @@ func commandPause(ctx context.Context, s *Session, d *CommandData) {
 	// Validate that they are in the game
 	playerIndex := t.GetPlayerIndexFromID(s.UserID)
 	if playerIndex == -1 {
-		s.Warning("You are not at table " + strconv.FormatUint(t.ID, 10) + ", " +
-			"so you cannot pause / unpause.")
-		return
+		controller, unified := t.researchUnifiedControllerForSession(s)
+		if !unified {
+			if _, registered := t.researchUnifiedController(s.UserID); registered {
+				s.Warning("This session is no longer the active unified connection.")
+				return
+			}
+			s.Warning("You are not at table " + strconv.FormatUint(t.ID, 10) + ", " +
+				"so you cannot pause / unpause.")
+			return
+		}
+		if !researchUnifiedCapabilities(t, controller).CanPause {
+			s.Warning("The unified controller cannot pause / unpause this game.")
+			return
+		}
+		playerIndex = controller.ViewedSeat
 	}
 	p := g.Players[playerIndex]
 
@@ -83,6 +96,7 @@ func commandPause(ctx context.Context, s *Session, d *CommandData) {
 	}
 
 	pause(ctx, s, d, t, playerIndex)
+	reviseResearchUnifiedProjection(t)
 }
 
 func pause(ctx context.Context, s *Session, d *CommandData, t *Table, playerIndex int) {

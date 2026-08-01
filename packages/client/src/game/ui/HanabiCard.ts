@@ -28,10 +28,6 @@ import Konva from "konva";
 import { includes } from "lodash";
 import { noteEqual, noteHasMeaning, parseNote } from "../reducers/notesReducer";
 import type { UICard } from "../types/UICard";
-import * as HanabiCardInit from "./HanabiCardInit";
-import * as HanabiCardMouse from "./HanabiCardMouse";
-import { LayoutChild } from "./LayoutChild";
-import { globals } from "./UIGlobals";
 import {
   CARD_ANIMATION_LENGTH_SECONDS,
   CARD_FADE,
@@ -47,7 +43,10 @@ import {
   CARD_IMAGE_STACK_BASE_RANK_NAME,
   CARD_IMAGE_UNKNOWN_CARD_RANK_NAME,
 } from "./drawCards";
+import * as HanabiCardInit from "./HanabiCardInit";
+import * as HanabiCardMouse from "./HanabiCardMouse";
 import { animate } from "./konvaHelpers";
+import { LayoutChild } from "./LayoutChild";
 import {
   checkNoteImpossibility,
   getRankFromNote,
@@ -55,6 +54,8 @@ import {
   possibleCardsFromNoteAndClues,
 } from "./noteCheckImpossibility";
 import * as notes from "./notes";
+import { globals } from "./UIGlobals";
+import { isPlayerProjection } from "./unifiedController";
 
 enum PipState {
   Hidden,
@@ -1018,7 +1019,7 @@ export class HanabiCard extends Konva.Group implements NodeWithTooltip, UICard {
     // Spectators
     if (
       visible
-      && !globals.state.playing
+      && !isPlayerProjection(globals.state)
       && !globals.state.finished
       && !this.noteIndicator.rotated
     ) {
@@ -1032,7 +1033,7 @@ export class HanabiCard extends Konva.Group implements NodeWithTooltip, UICard {
   shouldShowNoteIndicator(): boolean {
     // If we are a player in an ongoing game, show the note indicator if we have a non-blank note on
     // it.
-    if (globals.state.playing) {
+    if (isPlayerProjection(globals.state)) {
       const ourNote =
         globals.state.notes.ourNotes[this.state.order]?.text ?? "";
       return ourNote !== "";

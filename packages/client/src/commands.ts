@@ -8,6 +8,7 @@ import type {
 import { globals } from "./Globals";
 import * as chat from "./chat";
 import * as gameChat from "./game/chat";
+import { isPlayerProjection } from "./game/ui/unifiedController";
 import * as pregame from "./lobby/pregame";
 import { Screen } from "./lobby/types/Screen";
 import * as modals from "./modals";
@@ -79,7 +80,7 @@ function acknowledgeChatRead(
     }
 
     const UIState = globals.ui.globals.state;
-    if (!UIState.playing && !UIState.finished) {
+    if (!isPlayerProjection(UIState) && !UIState.finished) {
       // The chat window was not open; pop open the chat window every time for spectators.
       gameChat.toggle();
       globals.conn!.send("chatRead", {

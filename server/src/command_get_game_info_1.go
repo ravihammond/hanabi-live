@@ -25,6 +25,9 @@ import (
 //	  tableID: 5,
 //	}
 func commandGetGameInfo1(ctx context.Context, s *Session, d *CommandData) {
+	// Snapshot registry-owned HSM metadata before taking the table lock. The unified controller
+	// itself is table-owned and is resolved below while that lock is held.
+	hsmDebug := researchHSMDebugInitForUser(s.UserID)
 	t, exists := getTableAndLock(ctx, s, d.TableID, !d.NoTableLock, !d.NoTablesLock)
 	if !exists {
 		return
@@ -47,11 +50,23 @@ func commandGetGameInfo1(ctx context.Context, s *Session, d *CommandData) {
 			".")
 		return
 	}
+	if _, registered := t.researchUnifiedController(s.UserID); registered {
+		if _, active := t.researchUnifiedControllerForSession(s); !active {
+			s.Warning("This session is no longer the active unified connection.")
+			return
+		}
+	}
 
-	getGameInfo1(s, t, playerIndex, spectatorIndex)
+	getGameInfo1(s, t, playerIndex, spectatorIndex, hsmDebug)
 }
 
-func getGameInfo1(s *Session, t *Table, playerIndex int, spectatorIndex int) {
+func getGameInfo1(
+	s *Session,
+	t *Table,
+	playerIndex int,
+	spectatorIndex int,
+	hsmDebug *ResearchHSMDebugInit,
+) {
 	// Local variables
 	g := t.Game
 
@@ -113,7 +128,11 @@ func getGameInfo1(s *Session, t *Table, playerIndex int, spectatorIndex int) {
 	if playerIndex != -1 {
 		pauseQueued = g.Players[playerIndex].RequestedPause
 	}
-	hsmDebug := researchHSMDebugInitForUser(s.UserID)
+	unifiedController, researchUnified := t.researchUnifiedControllerForSession(s)
+	var unifiedControllerInit *ResearchUnifiedControllerInit
+	if researchUnified {
+		unifiedControllerInit = researchUnifiedControllerInit(t, unifiedController)
+	}
 
 	type InitMessage struct {
 		// Game settings
@@ -146,9 +165,11 @@ func getGameInfo1(s *Session, t *Table, playerIndex int, spectatorIndex int) {
 		PauseQueued      bool `json:"pauseQueued"`
 
 		// Persistent localhost research run controls.
-		ResearchPersistentSingleGame bool                  `json:"researchPersistentSingleGame"`
-		ResearchRestartController    bool                  `json:"researchRestartController"`
-		HSMDebug                     *ResearchHSMDebugInit `json:"hsmDebug,omitempty"`
+		ResearchPersistentSingleGame bool                           `json:"researchPersistentSingleGame"`
+		ResearchRestartController    bool                           `json:"researchRestartController"`
+		ResearchUnified              bool                           `json:"researchUnified"`
+		UnifiedController            *ResearchUnifiedControllerInit `json:"unifiedController,omitempty"`
+		HSMDebug                     *ResearchHSMDebugInit          `json:"hsmDebug,omitempty"`
 	}
 
 	s.Emit("init", &InitMessage{
@@ -184,8 +205,11 @@ func getGameInfo1(s *Session, t *Table, playerIndex int, spectatorIndex int) {
 		PauseQueued:      pauseQueued,
 
 		ResearchPersistentSingleGame: t.ExtraOptions.ResearchPersistentSingleGame,
-		ResearchRestartController: t.ExtraOptions.ResearchPersistentSingleGame &&
-			s.UserID == t.ExtraOptions.ResearchRestartControllerID,
-		HSMDebug: hsmDebug,
+		ResearchRestartController: (researchUnified && unifiedControllerInit.Capabilities.CanRestart) ||
+			(t.ExtraOptions.ResearchPersistentSingleGame &&
+				s.UserID == t.ExtraOptions.ResearchRestartControllerID),
+		ResearchUnified:   researchUnified,
+		UnifiedController: unifiedControllerInit,
+		HSMDebug:          hsmDebug,
 	})
 }

@@ -243,6 +243,7 @@ function registerPathHandlers(httpServer: FastifyInstance) {
   httpServer.get("/game", httpMain);
   httpServer.get("/game/:tableID", httpMain);
   httpServer.get("/game/:tableID/shadow/:seat", httpMain);
+  httpServer.get("/unified-game/:tableID", httpMain);
   httpServer.get("/replay", httpMain);
   httpServer.get("/replay/:databaseID", httpMain);
   httpServer.get("/shared-replay", httpMain);

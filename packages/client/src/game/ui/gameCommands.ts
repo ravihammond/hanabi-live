@@ -41,6 +41,8 @@ import type { InitData } from "../types/InitData";
 import { ReplayArrowOrder } from "../types/ReplayArrowOrder";
 import { SoundType } from "../types/SoundType";
 import type { State } from "../types/State";
+import type { UnifiedProjectionData } from "../types/UnifiedController";
+import { UNIFIED_MANUAL_PROTOCOL } from "../types/UnifiedController";
 import type { ActionIncludingHypothetical } from "../types/actions";
 import { globals } from "./UIGlobals";
 import * as arrows from "./arrows";
@@ -77,6 +79,11 @@ import * as replay from "./replay";
 import * as stats from "./stats";
 import * as timer from "./timer";
 import { uiInit } from "./uiInit";
+import {
+  installUnifiedProjection,
+  isUnifiedController,
+  shouldApplyLiveGameAction,
+} from "./unifiedController";
 
 // Define a command handler map.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -117,6 +124,9 @@ interface CardIdentitiesData {
   cardIdentities: CardIdentity[];
 }
 gameCommands.set("cardIdentities", (data: CardIdentitiesData) => {
+  if (isUnifiedController(globals.state)) {
+    return;
+  }
   globals.store!.dispatch({
     type: "cardIdentities",
     cardIdentities: data.cardIdentities,
@@ -128,6 +138,13 @@ interface FinishOngoingGameData {
   sharedReplayLeader: string;
 }
 gameCommands.set("finishOngoingGame", (data: FinishOngoingGameData) => {
+  // A unified controller stays on its distinct surface. Its terminal state and card reveal arrive
+  // as one complete revisioned projection, so applying this ordinary shared-replay transition would
+  // replace that projection and navigate away from the bearer session.
+  if (isUnifiedController(globals.state)) {
+    return;
+  }
+
   // Zero out the user-created efficiency modifier, if any. In a shared replay, this must be synced
   // with the shared replay leader.
   globals.store!.dispatch({
@@ -206,8 +223,11 @@ gameCommands.set("hypoStart", () => {
 });
 
 gameCommands.set("init", (metadata: InitData) => {
+  validateUnifiedProtocol(metadata);
   globals.researchPersistentSingleGame = metadata.researchPersistentSingleGame;
-  globals.researchRestartController = metadata.researchRestartController;
+  globals.researchRestartController =
+    metadata.unifiedController?.capabilities.canRestart
+    ?? metadata.researchRestartController;
   setURL(metadata);
   initStateStore(metadata);
 
@@ -229,6 +249,38 @@ gameCommands.set("init", (metadata: InitData) => {
   uiInit();
 });
 
+export function validateUnifiedProtocol(
+  metadata: Pick<InitData, "unifiedController">,
+  pathname = globalThis.location.pathname,
+): void {
+  const onUnifiedRoute =
+    pathname === "/unified-game" || pathname.startsWith("/unified-game/");
+  if (metadata.unifiedController === undefined) {
+    if (onUnifiedRoute) {
+      throw new Error(
+        "Unified manual controller protocol is unavailable; the running server or browser bundle is stale.",
+      );
+    }
+    return;
+  }
+
+  const protocolCapability: unknown =
+    metadata.unifiedController.protocolCapability;
+  if (protocolCapability !== UNIFIED_MANUAL_PROTOCOL) {
+    throw new Error("Unsupported unified manual controller protocol.");
+  }
+}
+
+gameCommands.set("researchUnifiedProjection", (data: UnifiedProjectionData) => {
+  if (!installUnifiedProjection(data)) {
+    return;
+  }
+  syncHSMToVisibleBoundary();
+  if (!globals.loading) {
+    setNoteIndicatorAndCheckForSpecialNote();
+  }
+});
+
 // Received when spectating a game.
 interface NoteData {
   order: CardOrder;
@@ -236,7 +288,7 @@ interface NoteData {
 }
 gameCommands.set("note", (data: NoteData) => {
   // If we are an active player and we got this message, something has gone wrong.
-  if (globals.state.playing) {
+  if (globals.state.playing || isUnifiedController(globals.state)) {
     return;
   }
 
@@ -270,6 +322,9 @@ interface NoteList {
   isSpectator: boolean;
 }
 gameCommands.set("noteList", (data: NoteListData) => {
+  if (isUnifiedController(globals.state)) {
+    return;
+  }
   const names = [] as string[];
   const noteTextLists = [] as string[][];
   const isSpectators = [] as boolean[];
@@ -294,6 +349,9 @@ interface NoteListPlayerData {
   notes: string[];
 }
 gameCommands.set("noteListPlayer", (data: NoteListPlayerData) => {
+  if (isUnifiedController(globals.state)) {
+    return;
+  }
   // Store our notes
   globals.store!.dispatch({
     type: "noteListPlayer",
@@ -307,8 +365,12 @@ gameCommands.set("noteListPlayer", (data: NoteListPlayerData) => {
 interface GameActionData {
   tableID: number;
   action: GameAction;
+  projectionRevision?: number;
 }
 gameCommands.set("gameAction", (data: GameActionData) => {
+  if (!shouldApplyLiveGameAction(globals.state)) {
+    return;
+  }
   // Update the game state.
   globals.store!.dispatch(data.action);
   syncHSMToVisibleBoundary();
@@ -319,6 +381,9 @@ interface GameActionListData {
   list: GameAction[];
 }
 gameCommands.set("gameActionList", (data: GameActionListData) => {
+  if (isUnifiedController(globals.state)) {
+    return;
+  }
   // Users can load a specific turn in a replay by using a URL hash
   // (e.g. "/replay/123#5"). Record the hash before we load the UI (which will overwrite the hash
   // with "#1", corresponding to the first turn).
@@ -422,6 +487,9 @@ interface PauseData {
   playerIndex: PlayerIndex;
 }
 gameCommands.set("pause", (data: PauseData) => {
+  if (isUnifiedController(globals.state)) {
+    return;
+  }
   const soundType = data.active ? SoundType.GamePaused : SoundType.GameUnpaused;
   globals.game!.sounds.play(soundType);
 
@@ -452,6 +520,9 @@ interface VoteData {
   vote: boolean;
 }
 gameCommands.set("voteChange", (data: VoteData) => {
+  if (isUnifiedController(globals.state)) {
+    return;
+  }
   if (data.vote) {
     setSkullEnabled();
   } else {
@@ -624,17 +695,33 @@ function suggestTurn(who: string, room: string, segment: number) {
 }
 
 function setURL(data: InitData) {
-  let path: string;
-  if (data.sharedReplay) {
-    path = `/shared-replay/${data.databaseID}`;
-  } else if (data.replay) {
-    path = `/replay/${data.databaseID}`;
-  } else {
-    path = `/game/${data.tableID}${
-      data.shadowing ? `/shadow/${data.ourPlayerIndex}` : ""
-    }`;
+  setBrowserAddressBarPath(getGamePath(data), globalThis.location.hash);
+}
+
+export function getGamePath(
+  data: Pick<
+    InitData,
+    | "tableID"
+    | "sharedReplay"
+    | "replay"
+    | "databaseID"
+    | "shadowing"
+    | "ourPlayerIndex"
+    | "unifiedController"
+  >,
+): string {
+  if (data.unifiedController !== undefined) {
+    return `/unified-game/${data.tableID}`;
   }
-  setBrowserAddressBarPath(path, globalThis.location.hash);
+  if (data.sharedReplay) {
+    return `/shared-replay/${data.databaseID}`;
+  }
+  if (data.replay) {
+    return `/replay/${data.databaseID}`;
+  }
+  return `/game/${data.tableID}${
+    data.shadowing ? `/shadow/${data.ourPlayerIndex}` : ""
+  }`;
 }
 
 function initStateStore(data: InitData) {
@@ -705,6 +792,13 @@ function initStateStore(data: InitData) {
     pausePlayerIndex: data.pausePlayerIndex,
     efficiencyModifier: data.sharedReplayEffMod,
   });
+
+  if (data.unifiedController !== undefined) {
+    globals.store.dispatch({
+      type: "unifiedControllerInit",
+      controller: data.unifiedController,
+    });
+  }
 
   // If we happen to be joining an ongoing hypothetical, we cannot dispatch a "hypoEnter" here. We
   // must wait until the game is initialized first, because the "hypoEnter" handler requires there

@@ -10,6 +10,7 @@ import Konva from "konva";
 import type { State } from "../../../types/State";
 import { globals } from "../../UIGlobals";
 import { LABEL_COLOR } from "../../constants";
+import { canUnifiedControllerAct } from "../../unifiedController";
 
 export function isVisible(state: State): boolean {
   return (
@@ -18,7 +19,7 @@ export function isVisible(state: State): boolean {
     // The clue UI should take precedence over the "Current Player" area.
     && (state.ongoingGame.turn.currentPlayerIndex
       !== state.metadata.ourPlayerIndex
-      || !state.playing)
+      || (!state.playing && !canUnifiedControllerAct(state)))
     // The premove cancel button should take precedence over the "Current Player" area.
     && state.premove === null
     // Do not show it if the game is over.

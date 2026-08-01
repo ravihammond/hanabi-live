@@ -115,6 +115,13 @@ export class HanabiUI {
     cursor.set("default");
   }
 
+  /** Rebuild the shared renderer in place after an atomic unified projection install. */
+  redrawUnifiedProjection(): void {
+    tooltips.closeAllTooltips();
+    this.redrawGameUI();
+    timer.resumeAfterResize();
+  }
+
   destroy(): void {
     window.removeEventListener("resize", this.resizeHandler);
     if (this.resizeRequestAnimationFrame !== null) {
@@ -179,6 +186,16 @@ export class HanabiUI {
     this.globals.stage.position({ x: 0, y: 0 });
     initStageSize();
 
+    this.redrawGameUI();
+
+    timer.resumeAfterResize();
+
+    this.liveResizeActive = false;
+    this.globals.isResizing = false;
+    this.globals.animateFast = false;
+  }
+
+  private redrawGameUI(): void {
     // We must also clear the card-related globals or else we will have duplicates.
     const { visibleState } = this.globals.state;
     this.globals.deck = [];
@@ -205,11 +222,6 @@ export class HanabiUI {
     this.globals.layers.card.draw();
     this.globals.layers.UI2.draw();
     this.globals.layers.arrow.draw();
-    timer.resumeAfterResize();
-
-    this.liveResizeActive = false;
-    this.globals.isResizing = false;
-    this.globals.animateFast = false;
   }
 }
 

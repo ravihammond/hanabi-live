@@ -28,7 +28,7 @@
       "target_boundary": 0,
       "evidence_boundary": 0,
       "perspective_player": 0,
-      "semantic_program_id": "sha256:0aa06d6cad330fb09d2520a6d35fc79c2f3086f3eb0e08f32a447c485b637bda",
+      "semantic_program_id": "sha256:79d5f995ac5be03f0178ce24d26abcba5915ee8b11de20b09ed3bfc279e593cb",
       "semantic_profile_id": 3,
       "mistaken_actions": [],
       "aggregate_action_classifications": [
@@ -114,7 +114,7 @@
       "phase": "exact_solving",
       "topology_id": 2,
       "capacity_manifest_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
-      "semantic_program_id": "sha256:0aa06d6cad330fb09d2520a6d35fc79c2f3086f3eb0e08f32a447c485b637bda",
+      "semantic_program_id": "sha256:79d5f995ac5be03f0178ce24d26abcba5915ee8b11de20b09ed3bfc279e593cb",
       "semantic_profile_id": 3,
       "legal_action_projection": [
         false,

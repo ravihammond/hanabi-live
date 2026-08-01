@@ -5,6 +5,7 @@ import type { NotesState } from "./NotesState";
 import type { PauseState } from "./PauseState";
 import type { ReplayState } from "./ReplayState";
 import type { UIState } from "./UIState";
+import type { UnifiedControllerState } from "./UnifiedController";
 
 export interface State {
   readonly visibleState: GameState | null; // Null during initialization
@@ -17,6 +18,9 @@ export interface State {
 
   // Equal to true if we are shadowing a player.
   readonly shadowing: boolean;
+
+  /** Null for every regular Hanabi.live player, spectator, and replay. */
+  readonly unifiedController?: UnifiedControllerState | null;
 
   // Equal to true if we are in a dedicated solo replay or a shared replay.
   readonly finished: boolean;
