@@ -2,8 +2,10 @@ import { SoundMove } from "@hanabi-live/data";
 import type { GameAction, GameState } from "@hanabi-live/game";
 import { includes } from "complete-common";
 import { SoundType } from "../../../types/SoundType";
+import { UNIFIED_TRANSITION_ACCEPTED_ACTION } from "../../../types/UnifiedController";
 import { isOurTurn } from "../../isOurTurn";
 import { globals } from "../../UIGlobals";
+import { getUnifiedController } from "../../unifiedController";
 import {
   SOUND_TYPE_ACTIONS,
   getSoundType,
@@ -23,6 +25,7 @@ export function onNewSoundEffect(
     | undefined,
 ): void {
   const { soundMove } = globals.lobby.settings;
+  const unifiedController = getUnifiedController(globals.state);
 
   if (
     // Do not play sounds during resize-driven observer re-registration.
@@ -32,6 +35,11 @@ export function onNewSoundEffect(
     // Only make a sound when the game starts or when it is a new player's turn.
     || data.gameState.turn.currentPlayerIndex
       === previousData?.gameState.turn.currentPlayerIndex
+    // Unified projections reconcile through the live observer graph. Only an accepted action (not
+    // replay or perspective navigation) should produce live turn sounds.
+    || (unifiedController !== null
+      && unifiedController.transitionKind
+        !== UNIFIED_TRANSITION_ACCEPTED_ACTION)
     // Do not play sounds in hypotheticals.
     || globals.state.replay.hypothetical !== null
     || globals.state.finished

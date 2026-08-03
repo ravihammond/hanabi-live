@@ -1,6 +1,19 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
+
+const (
+	researchUnifiedTransitionAcceptedAction = "acceptedAction"
+	researchUnifiedFollowDelay              = 1500 * time.Millisecond
+)
+
+// This scheduler is a production time boundary and is replaced by a deterministic fake in tests.
+var scheduleResearchUnifiedFollow = func(delay time.Duration, follow func()) {
+	time.AfterFunc(delay, follow)
+}
 
 // Unified lock policy:
 //   - A ResearchUnifiedController belongs to one Table and is protected by that table's mutex.
@@ -14,6 +27,9 @@ type ResearchUnifiedController struct {
 	SelectedBoundary   int
 	ProjectionRevision uint64
 	Initialized        bool
+	TransitionKind     string
+	PendingFollowToken uint64
+	NextFollowToken    uint64
 	// ActionCutoffs is indexed by replay segment and stores the exclusive end of that segment in
 	// Game.Actions. It lets historical projections reuse the canonical action stream without
 	// reconstructing or copying Hanabi state-transition logic.
@@ -54,6 +70,8 @@ type ResearchUnifiedProjection struct {
 	Actions            []interface{}               `json:"actions"`
 	Notes              []string                    `json:"notes"`
 	CardIdentities     []*CardIdentity             `json:"cardIdentities,omitempty"`
+	TransitionKind     string                      `json:"transitionKind,omitempty"`
+	PendingFollowToken uint64                      `json:"pendingFollowToken,omitempty"`
 }
 
 func (t *Table) researchUnifiedController(userID int) (*ResearchUnifiedController, bool) {
@@ -182,7 +200,14 @@ func resolveResearchUnifiedProjection(
 		Actions:            actions,
 		Notes:              append([]string(nil), game.Players[controller.ViewedSeat].Notes...),
 		CardIdentities:     cardIdentities,
+		TransitionKind:     controller.TransitionKind,
+		PendingFollowToken: controller.PendingFollowToken,
 	}, nil
+}
+
+func invalidateResearchUnifiedFollow(controller *ResearchUnifiedController) {
+	controller.TransitionKind = ""
+	controller.PendingFollowToken = 0
 }
 
 func emitResearchUnifiedProjection(

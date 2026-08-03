@@ -1,9 +1,11 @@
 import type { PlayerIndex } from "@hanabi-live/game";
+import equal from "fast-deep-equal";
 import type { State } from "../types/State";
 import type {
   UnifiedControllerState,
   UnifiedProjectionData,
 } from "../types/UnifiedController";
+import { UNIFIED_TRANSITION_ACCEPTED_ACTION } from "../types/UnifiedController";
 import { globals } from "./UIGlobals";
 
 export function getUnifiedController(
@@ -104,7 +106,7 @@ export function requestUnifiedProjection(
   viewedSeat: PlayerIndex,
   selectedBoundary?: number,
 ): boolean {
-  if (globals.store === null || globals.lobby.conn === null) {
+  if (globals.store === null) {
     return false;
   }
 
@@ -113,10 +115,22 @@ export function requestUnifiedProjection(
     return false;
   }
 
+  const targetBoundary = selectedBoundary ?? controller.selectedBoundary;
+  if (
+    viewedSeat === controller.viewedSeat
+    && targetBoundary === controller.selectedBoundary
+  ) {
+    return true;
+  }
+
+  if (globals.lobby.conn === null) {
+    return true;
+  }
+
   globals.lobby.conn.send("researchPerspective", {
     tableID: globals.lobby.tableID,
     viewedSeat,
-    selectedBoundary: selectedBoundary ?? controller.selectedBoundary,
+    selectedBoundary: targetBoundary,
     expectedProjectionRevision: controller.projectionRevision,
   });
   return true;
@@ -141,23 +155,50 @@ export function installUnifiedProjection(
   }
 
   const { stateObserver, store } = globals;
+  const retainRenderer =
+    controller.projectionInstalled
+    && projection.viewedSeat === controller.viewedSeat;
+  if (
+    retainRenderer
+    && projection.transitionKind === UNIFIED_TRANSITION_ACCEPTED_ACTION
+    && !isVerifiedActionContinuation(store.getState(), projection)
+  ) {
+    return false;
+  }
   globals.editingNote = null;
   globals.lastNote = "";
-  stateObserver?.unregisterObservers();
+  if (!retainRenderer) {
+    stateObserver?.unregisterObservers();
+  }
   try {
     store.dispatch({
       type: "unifiedProjection",
       projection,
     });
   } catch (error: unknown) {
-    stateObserver?.registerObservers(store);
+    if (!retainRenderer) {
+      stateObserver?.registerObservers(store);
+    }
     throw error;
   }
 
-  if (globals.lobby.ui === null) {
-    stateObserver?.registerObservers(store);
-  } else {
-    globals.lobby.ui.redrawUnifiedProjection();
+  if (retainRenderer) {
+    return true;
+  }
+  if (globals.lobby.ui !== null) {
+    globals.deck = [];
+    globals.stackBases = [];
+  }
+  const previousAnimateFast = globals.animateFast;
+  globals.animateFast = true;
+  try {
+    if (globals.lobby.ui === null) {
+      stateObserver?.registerObservers(store);
+    } else {
+      globals.lobby.ui.redrawUnifiedProjection();
+    }
+  } finally {
+    globals.animateFast = previousAnimateFast;
   }
   return true;
 }
@@ -165,4 +206,17 @@ export function installUnifiedProjection(
 /** Unified live events wait for the next complete projection to prevent mixed revisions. */
 export function shouldApplyLiveGameAction(state: State): boolean {
   return !isUnifiedController(state);
+}
+
+function isVerifiedActionContinuation(
+  state: State,
+  projection: UnifiedProjectionData,
+): boolean {
+  const installedActions = state.replay.actions;
+  return (
+    projection.actions.length >= installedActions.length
+    && installedActions.every((action, index) =>
+      equal(action, projection.actions[index]),
+    )
+  );
 }

@@ -199,6 +199,7 @@ export class HanabiUI {
     // We must also clear the card-related globals or else we will have duplicates.
     const { visibleState } = this.globals.state;
     this.globals.deck = [];
+    this.globals.stackBases = [];
     for (const unsubscribe of this.globals.cardSubscriptions) {
       unsubscribe();
     }

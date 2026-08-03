@@ -2077,6 +2077,9 @@ input[type="text"].wrongInput {
 .game-cursor-default {
   cursor: auto;
 }
+.game-cursor-pointer {
+  cursor: pointer;
+}
 .game-cursor-look {
   cursor: url("/public/img/cursors/look.png"), auto;
 }

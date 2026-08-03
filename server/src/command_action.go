@@ -135,6 +135,8 @@ func commandAction(ctx context.Context, s *Session, d *CommandData) {
 func action(ctx context.Context, s *Session, d *CommandData, t *Table, p *GamePlayer) {
 	// Local variables
 	g := t.Game
+	actorSeat := p.Index
+	previousLiveBoundary := researchUnifiedLiveBoundary(g)
 
 	// Start the idle timeout
 	// (but do not update the idle variable if we are ending the game)
@@ -227,7 +229,7 @@ func action(ctx context.Context, s *Session, d *CommandData, t *Table, p *GamePl
 
 	// Send the new turn
 	t.NotifyTurn()
-	researchFollowUnifiedTurn(t, g.ActivePlayerIndex)
+	researchProjectUnifiedAction(t, g, actorSeat, previousLiveBoundary)
 
 	if g.EndCondition == EndConditionInProgress {
 		logger.Info(t.GetName() + "It is now " + nextPlayer.Name + "'s turn.")

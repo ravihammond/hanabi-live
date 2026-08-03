@@ -1,13 +1,19 @@
+import { SoundMove } from "@hanabi-live/data";
 import type { CardOrder } from "@hanabi-live/game";
 import { draw, getDefaultMetadata, rankClue } from "@hanabi-live/game";
 import { afterEach, expect, jest, test } from "@jest/globals";
+import Konva from "konva";
 import { createStore } from "redux";
 import { initialState } from "../reducers/initialStates/initialState";
 import { stateReducer } from "../reducers/stateReducer";
 import type { State } from "../types/State";
 import type { UnifiedProjectionData } from "../types/UnifiedController";
+import { CardLayout } from "./CardLayout";
 import * as gameCommandsModule from "./gameCommands";
 import { gameCommands } from "./gameCommands";
+import type { LayoutChild } from "./LayoutChild";
+import { PlayStack } from "./PlayStack";
+import { onNewSoundEffect } from "./reactive/views/soundView";
 import { globals } from "./UIGlobals";
 
 afterEach(() => {
@@ -15,7 +21,10 @@ afterEach(() => {
   globals.stateObserver = null;
   globals.lobby.ui = null;
   globals.lobby.conn = null;
+  globals.game = null;
   globals.editingNote = null;
+  globals.deck = [];
+  globals.stackBases = [];
   jest.restoreAllMocks();
 });
 
@@ -96,6 +105,29 @@ function historicalProjectionActions() {
   ] as const;
 }
 
+function fakeLayoutChild(isStackBase = false): LayoutChild {
+  const child = new Konva.Group({ width: 100, height: 200 });
+  Object.assign(child, {
+    tween: null,
+    doMisplayAnimation: false,
+    checkSetDraggable: jest.fn(),
+    card: {
+      isStackBase,
+      setRaiseAndShadowOffset: jest.fn(),
+      setEmpathy: jest.fn(),
+    },
+  });
+  return child as unknown as LayoutChild;
+}
+
+async function nextAnimationFrame(): Promise<number> {
+  return await new Promise<number>((resolve) => {
+    requestAnimationFrame((timestamp) => {
+      resolve(timestamp);
+    });
+  });
+}
+
 test("a complete unified projection installs atomically without reloading", () => {
   const store = setUpUnifiedStore();
   const originalStore = globals.store;
@@ -103,9 +135,13 @@ test("a complete unified projection installs atomically without reloading", () =
   const reload = jest.spyOn(globalThis.history, "go");
   const navigate = jest.spyOn(globalThis.history, "replaceState");
   const unregisterObservers = jest.fn();
-  const redrawUnifiedProjection = jest.fn();
+  let animateFastDuringRebuild = false;
+  const redrawUnifiedProjection = jest.fn(() => {
+    animateFastDuringRebuild = globals.animateFast;
+  });
   globals.stateObserver = { unregisterObservers } as never;
   globals.lobby.ui = { redrawUnifiedProjection } as never;
+  globals.animateFast = false;
   globals.editingNote = 0 as CardOrder;
   let updates = 0;
   store.subscribe(() => {
@@ -127,6 +163,8 @@ test("a complete unified projection installs atomically without reloading", () =
   expect(updates).toBe(1);
   expect(unregisterObservers).toHaveBeenCalledTimes(1);
   expect(redrawUnifiedProjection).toHaveBeenCalledTimes(1);
+  expect(animateFastDuringRebuild).toBe(true);
+  expect(globals.animateFast).toBe(false);
   expect(globals.editingNote).toBeNull();
   expect(state.metadata.ourPlayerIndex).toBe(1);
   expect(state.playing).toBe(false);
@@ -150,6 +188,262 @@ test("a complete unified projection installs atomically without reloading", () =
     rank: 1,
   });
   expect(state.cardIdentities[5]).toEqual({ suitIndex: null, rank: null });
+});
+
+test("same-seat history projections retain observers and the renderer", () => {
+  const store = setUpUnifiedStore();
+  const handler = gameCommands.get("researchUnifiedProjection")!;
+  const unregisterObservers = jest.fn();
+  const redrawUnifiedProjection = jest.fn();
+  globals.stateObserver = { unregisterObservers } as never;
+  globals.lobby.ui = { redrawUnifiedProjection } as never;
+  handler(projection({ viewedSeat: 0 }));
+  unregisterObservers.mockClear();
+  redrawUnifiedProjection.mockClear();
+  const originalStore = globals.store;
+  const originalConnection = globals.lobby.conn;
+  const retainedNode = {} as never;
+  globals.deck = [retainedNode];
+  const reload = jest.spyOn(globalThis.history, "go");
+  const navigate = jest.spyOn(globalThis.history, "replaceState");
+
+  handler(
+    projection({
+      viewedSeat: 0,
+      selectedBoundary: 1,
+      projectionRevision: 9,
+      actions: historicalProjectionActions(),
+    }),
+  );
+
+  expect(unregisterObservers).not.toHaveBeenCalled();
+  expect(redrawUnifiedProjection).not.toHaveBeenCalled();
+  expect(globals.deck[0]).toBe(retainedNode);
+  expect(globals.store).toBe(originalStore);
+  expect(globals.lobby.conn).toBe(originalConnection);
+  expect(reload).not.toHaveBeenCalled();
+  expect(navigate).not.toHaveBeenCalled();
+  expect(store.getState().unifiedController).toMatchObject({
+    viewedSeat: 0,
+    selectedBoundary: 1,
+    projectionRevision: 9,
+  });
+});
+
+test("accepted-action projections require a verified appended action suffix", () => {
+  const store = setUpUnifiedStore();
+  const handler = gameCommands.get("researchUnifiedProjection")!;
+  const allActions = historicalProjectionActions();
+  const initialActions = allActions.slice(0, 10);
+  const unregisterObservers = jest.fn();
+  const redrawUnifiedProjection = jest.fn();
+  globals.stateObserver = { unregisterObservers } as never;
+  globals.lobby.ui = { redrawUnifiedProjection } as never;
+  handler(projection({ viewedSeat: 0, actions: initialActions }));
+  const installed = store.getState();
+  unregisterObservers.mockClear();
+  redrawUnifiedProjection.mockClear();
+  const mismatchedActions = [draw(0, 0, 1, 1), ...allActions.slice(1)];
+
+  handler(
+    projection({
+      viewedSeat: 0,
+      selectedBoundary: 1,
+      projectionRevision: 9,
+      actions: mismatchedActions,
+      transitionKind: "acceptedAction",
+      pendingFollowToken: 1,
+    } as never),
+  );
+
+  expect(store.getState()).toBe(installed);
+
+  handler(
+    projection({
+      viewedSeat: 0,
+      selectedBoundary: 1,
+      projectionRevision: 9,
+      actions: allActions,
+      transitionKind: "acceptedAction",
+      pendingFollowToken: 1,
+    } as never),
+  );
+
+  expect(store.getState().unifiedController).toMatchObject({
+    projectionRevision: 9,
+    transitionKind: "acceptedAction",
+    pendingFollowToken: 1,
+  });
+  expect(store.getState().replay.actions).toHaveLength(allActions.length);
+  expect(unregisterObservers).not.toHaveBeenCalled();
+  expect(redrawUnifiedProjection).not.toHaveBeenCalled();
+
+  handler(
+    projection({
+      viewedSeat: 0,
+      selectedBoundary: 1,
+      projectionRevision: 10,
+      actions: allActions,
+      notes: ["updated during transition"],
+      transitionKind: "acceptedAction",
+      pendingFollowToken: 1,
+    }),
+  );
+
+  expect(store.getState().unifiedController?.projectionRevision).toBe(10);
+  expect(store.getState().notes.ourNotes[0]?.text).toBe(
+    "updated during transition",
+  );
+});
+
+test("changed-seat rebuilds do not accumulate card renderer state", () => {
+  setUpUnifiedStore();
+  const handler = gameCommands.get("researchUnifiedProjection")!;
+  const staleDeckNode = {} as never;
+  const staleStackBase = {} as never;
+  globals.deck = [staleDeckNode];
+  globals.stackBases = [staleStackBase];
+  const registrySizesAtRebuild: Array<readonly [number, number]> = [];
+  globals.stateObserver = { unregisterObservers: jest.fn() } as never;
+  globals.lobby.ui = {
+    redrawUnifiedProjection: () => {
+      registrySizesAtRebuild.push([
+        globals.deck.length,
+        globals.stackBases.length,
+      ]);
+      globals.deck.push({} as never);
+      globals.stackBases.push({} as never);
+    },
+  } as never;
+
+  handler(projection());
+  handler(projection({ viewedSeat: 0, projectionRevision: 9 }));
+
+  expect(registrySizesAtRebuild).toEqual([
+    [0, 0],
+    [0, 0],
+  ]);
+  expect(globals.deck).toHaveLength(1);
+  expect(globals.stackBases).toHaveLength(1);
+});
+
+test("fast perspective layouts create no tweens and stay fixed across frames", async () => {
+  const base = initialState(getDefaultMetadata(2));
+  globals.store = {
+    getState: () => ({ ...base, visibleState: base.ongoingGame }),
+  } as never;
+  const previousAnimateFast = globals.animateFast;
+  globals.animateFast = true;
+  jest
+    .spyOn(globals.layers.card, "batchDraw")
+    .mockImplementation(() => globals.layers.card);
+  const hand = new CardLayout({ width: 400, height: 200 });
+  const handCard = fakeLayoutChild();
+  const playStack = new PlayStack({ width: 100, height: 200 });
+  const playedCard = fakeLayoutChild(true);
+
+  hand.addChild(handCard);
+  playStack.addChild(playedCard);
+  const firstFrame = {
+    hand: handCard.position(),
+    handScale: handCard.scale(),
+    play: playedCard.position(),
+    playScale: playedCard.scale(),
+  };
+
+  await nextAnimationFrame();
+  await nextAnimationFrame();
+
+  expect(handCard.tween).toBeNull();
+  expect(playedCard.tween).toBeNull();
+  expect({
+    hand: handCard.position(),
+    handScale: handCard.scale(),
+    play: playedCard.position(),
+    playScale: playedCard.scale(),
+  }).toEqual(firstFrame);
+  globals.animateFast = previousAnimateFast;
+});
+
+test("unified replay navigation is silent while accepted actions retain live sounds", () => {
+  const store = setUpUnifiedStore();
+  const handler = gameCommands.get("researchUnifiedProjection")!;
+  const allActions = historicalProjectionActions();
+  const initialActions = allActions.slice(0, 10);
+  handler(
+    projection({
+      viewedSeat: 0,
+      selectedBoundary: 1,
+      liveBoundary: 1,
+      actions: allActions,
+    }),
+  );
+  handler(
+    projection({
+      viewedSeat: 0,
+      selectedBoundary: 0,
+      liveBoundary: 1,
+      projectionRevision: 9,
+      actions: initialActions,
+    }),
+  );
+  const historicalState = store.getState();
+  handler(
+    projection({
+      viewedSeat: 0,
+      selectedBoundary: 1,
+      liveBoundary: 1,
+      projectionRevision: 10,
+      actions: allActions,
+    }),
+  );
+  const play = jest.fn();
+  globals.game = { sounds: { play } } as never;
+  const previousSettings = globals.lobby.settings;
+  globals.lobby.settings = { ...previousSettings, soundMove: SoundMove.All };
+  const liveState = store.getState();
+
+  onNewSoundEffect(
+    {
+      gameState: liveState.ongoingGame,
+      actions: liveState.replay.actions,
+    },
+    {
+      gameState: historicalState.ongoingGame,
+      actions: historicalState.replay.actions,
+    },
+  );
+
+  expect(historicalState.replay.active).toBe(true);
+  expect(liveState.replay.active).toBe(false);
+  expect(play).not.toHaveBeenCalled();
+
+  handler(
+    projection({
+      viewedSeat: 0,
+      currentTurnSeat: 0,
+      selectedBoundary: 2,
+      liveBoundary: 2,
+      projectionRevision: 11,
+      actions: [...allActions, rankClue(2, 1, [], 0)],
+      transitionKind: "acceptedAction",
+      pendingFollowToken: 2,
+    }),
+  );
+  const acceptedActionState = store.getState();
+  onNewSoundEffect(
+    {
+      gameState: acceptedActionState.ongoingGame,
+      actions: acceptedActionState.replay.actions,
+    },
+    {
+      gameState: liveState.ongoingGame,
+      actions: liveState.replay.actions,
+    },
+  );
+  globals.lobby.settings = previousSettings;
+
+  expect(play).toHaveBeenCalledTimes(1);
 });
 
 test("terminal identities reveal and rehydrate only through the atomic projection", () => {

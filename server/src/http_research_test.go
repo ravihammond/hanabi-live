@@ -2487,6 +2487,33 @@ func TestUnifiedPerspectiveSwitchPreservesGameAndTurnState(t *testing.T) {
 	}
 }
 
+func TestUnifiedPerspectiveExactStateRequestIsNoOp(t *testing.T) {
+	researchTestInit(t)
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandResearchPerspective(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		UnifiedViewedSeat:          researchIntPtr(0),
+		UnifiedSelectedBoundary:    researchIntPtr(0),
+		ExpectedProjectionRevision: researchUint64Ptr(1),
+	})
+
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	controller, _ := table.researchUnifiedController(viewer.UserID)
+	if controller.ProjectionRevision != 1 {
+		t.Fatalf("exact-state request advanced projection revision to %d", controller.ProjectionRevision)
+	}
+	if len(outbound.messages) != 0 {
+		t.Fatalf("exact-state request emitted messages: %#v", outbound.messages)
+	}
+}
+
 func TestUnifiedPerspectiveSwitchReturnsAtomicProjectionAtSelectedBoundary(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
@@ -2574,12 +2601,12 @@ func TestUnifiedPerspectiveResolverFailureDoesNotCommitControllerState(t *testin
 	table.Lock(nil)
 	defer table.Unlock(nil)
 	controller, _ := table.researchUnifiedController(viewer.UserID)
-	if controller.ViewedSeat != 1 || controller.SelectedBoundary != 1 ||
-		controller.ProjectionRevision != 2 {
+	if controller.ViewedSeat != 0 || controller.SelectedBoundary != 1 ||
+		controller.ProjectionRevision != 2 || controller.PendingFollowToken != 1 {
 		t.Fatalf("failed perspective resolution committed controller state: %#v", controller)
 	}
 	spectatorIndex := table.GetSpectatorIndexFromID(viewer.UserID)
-	if spectatorIndex < 0 || table.Spectators[spectatorIndex].ShadowingPlayerIndex != 1 {
+	if spectatorIndex < 0 || table.Spectators[spectatorIndex].ShadowingPlayerIndex != 0 {
 		t.Fatalf("failed perspective resolution committed spectator shadowing: %#v", table.Spectators)
 	}
 	if len(outbound.messages) != 1 || !strings.Contains(outbound.messages[0], "boundary is unavailable") {
@@ -2703,8 +2730,16 @@ func TestUnifiedActionRequiresCurrentActorBoundaryAndProjectionRevision(t *testi
 	}
 }
 
-func TestAcceptedUnifiedActionEmitsOnlyTheNextAtomicProjection(t *testing.T) {
+func TestAcceptedUnifiedActionProjectsThenFollowsAfterAnimationDelay(t *testing.T) {
 	researchTestInit(t)
+	originalScheduler := scheduleResearchUnifiedFollow
+	defer func() { scheduleResearchUnifiedFollow = originalScheduler }()
+	var scheduledDelay time.Duration
+	var scheduledFollow func()
+	scheduleResearchUnifiedFollow = func(delay time.Duration, follow func()) {
+		scheduledDelay = delay
+		scheduledFollow = follow
+	}
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
 	viewer := researchHSMTestViewer(join)
 	researchHandleGuestConnected(viewer)
@@ -2730,25 +2765,204 @@ func TestAcceptedUnifiedActionEmitsOnlyTheNextAtomicProjection(t *testing.T) {
 
 	projection := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
 	for key, expected := range map[string]interface{}{
-		"viewedSeat":         float64(1),
+		"viewedSeat":         float64(0),
 		"currentTurnSeat":    float64(1),
 		"selectedBoundary":   float64(1),
 		"liveBoundary":       float64(1),
 		"projectionRevision": float64(2),
+		"transitionKind":     "acceptedAction",
+		"pendingFollowToken": float64(1),
 	} {
 		if projection[key] != expected {
-			t.Fatalf("unexpected followed projection %s: got %#v, want %#v", key, projection[key], expected)
+			t.Fatalf("unexpected action projection %s: got %#v, want %#v", key, projection[key], expected)
 		}
+	}
+	capabilities := projection["capabilities"].(map[string]interface{})
+	if capabilities["canAct"] != false {
+		t.Fatalf("post-action actor projection remained actionable: %#v", capabilities)
 	}
 	for _, message := range outbound.messages {
 		if strings.HasPrefix(message, "gameAction ") {
 			t.Fatalf("unified action leaked a non-atomic gameAction message: %#v", outbound.messages)
 		}
 	}
+	if scheduledDelay != 1500*time.Millisecond || scheduledFollow == nil {
+		t.Fatalf("unexpected follow schedule: delay=%s callback=%v", scheduledDelay, scheduledFollow != nil)
+	}
+
+	outbound.messages = nil
+	scheduledFollow()
+
+	followed := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
+	for key, expected := range map[string]interface{}{
+		"viewedSeat":         float64(1),
+		"currentTurnSeat":    float64(1),
+		"selectedBoundary":   float64(1),
+		"liveBoundary":       float64(1),
+		"projectionRevision": float64(3),
+	} {
+		if followed[key] != expected {
+			t.Fatalf("unexpected followed projection %s: got %#v, want %#v", key, followed[key], expected)
+		}
+	}
+	if followed["transitionKind"] != nil || followed["pendingFollowToken"] != nil {
+		t.Fatalf("completed follow retained transition metadata: %#v", followed)
+	}
+}
+
+func TestUnifiedHistoryChangeCancelsPendingTurnFollow(t *testing.T) {
+	researchTestInit(t)
+	var scheduledFollow func()
+	scheduleResearchUnifiedFollow = func(_ time.Duration, follow func()) {
+		scheduledFollow = follow
+	}
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	targetRank := table.Game.Players[1].Hand[0].Rank
+	table.Unlock(nil)
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandAction(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		Type:                       ActionTypeRankClue,
+		Target:                     1,
+		Value:                      targetRank,
+		ExpectedActorSeat:          researchIntPtr(0),
+		ExpectedLiveBoundary:       researchIntPtr(0),
+		ExpectedProjectionRevision: researchUint64Ptr(1),
+	})
+	if scheduledFollow == nil {
+		t.Fatal("accepted action did not schedule turn following")
+	}
+	outbound.messages = nil
+
+	commandResearchPerspective(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		UnifiedViewedSeat:          researchIntPtr(0),
+		UnifiedSelectedBoundary:    researchIntPtr(0),
+		ExpectedProjectionRevision: researchUint64Ptr(2),
+	})
+
+	historical := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
+	if historical["projectionRevision"] != float64(3) ||
+		historical["transitionKind"] != nil || historical["pendingFollowToken"] != nil {
+		t.Fatalf("history change retained pending transition metadata: %#v", historical)
+	}
+	outbound.messages = nil
+	scheduledFollow()
+
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	controller, _ := table.researchUnifiedController(viewer.UserID)
+	if controller.ViewedSeat != 0 || controller.SelectedBoundary != 0 ||
+		controller.ProjectionRevision != 3 || controller.PendingFollowToken != 0 {
+		t.Fatalf("cancelled follow mutated controller state: %#v", controller)
+	}
+	if len(outbound.messages) != 0 {
+		t.Fatalf("cancelled follow emitted messages: %#v", outbound.messages)
+	}
+}
+
+func TestUnifiedRestartRequestCancelsPendingTurnFollow(t *testing.T) {
+	researchTestInit(t)
+	var scheduledFollow func()
+	scheduleResearchUnifiedFollow = func(_ time.Duration, follow func()) {
+		scheduledFollow = follow
+	}
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	targetRank := table.Game.Players[1].Hand[0].Rank
+	table.Unlock(nil)
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandAction(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		Type:                       ActionTypeRankClue,
+		Target:                     1,
+		Value:                      targetRank,
+		ExpectedActorSeat:          researchIntPtr(0),
+		ExpectedLiveBoundary:       researchIntPtr(0),
+		ExpectedProjectionRevision: researchUint64Ptr(1),
+	})
+	if scheduledFollow == nil {
+		t.Fatal("accepted action did not schedule turn following")
+	}
+	outbound.messages = nil
+
+	commandResearchRestart(context.Background(), viewer, &CommandData{
+		TableID:     created.TableID,
+		RestartKind: researchRestartSameSeed,
+	})
+
+	restarting := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
+	if restarting["projectionRevision"] != float64(3) ||
+		restarting["transitionKind"] != nil || restarting["pendingFollowToken"] != nil {
+		t.Fatalf("restart request retained pending transition metadata: %#v", restarting)
+	}
+	outbound.messages = nil
+	scheduledFollow()
+	if len(outbound.messages) != 0 {
+		t.Fatalf("cancelled follow emitted after restart request: %#v", outbound.messages)
+	}
+}
+
+func TestUnifiedSecondActionCharacterDoesNotScheduleTurnFollow(t *testing.T) {
+	researchTestInit(t)
+	scheduledFollows := 0
+	scheduleResearchUnifiedFollow = func(_ time.Duration, _ func()) {
+		scheduledFollows++
+	}
+	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
+	viewer := researchHSMTestViewer(join)
+	researchHandleGuestConnected(viewer)
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	table.Game.Options.DetrimentalCharacters = true
+	table.Game.Players[0].Character = "Genius"
+	table.Game.Players[0].CharacterMetadata = -1
+	targetSuit := table.Game.Players[1].Hand[0].SuitIndex
+	table.Unlock(nil)
+	outbound := viewer.outbound.(*researchRecordingOutbound)
+	outbound.messages = nil
+
+	commandAction(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		Type:                       ActionTypeColorClue,
+		Target:                     1,
+		Value:                      targetSuit,
+		ExpectedActorSeat:          researchIntPtr(0),
+		ExpectedLiveBoundary:       researchIntPtr(0),
+		ExpectedProjectionRevision: researchUint64Ptr(1),
+	})
+
+	projection := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
+	capabilities := projection["capabilities"].(map[string]interface{})
+	if projection["viewedSeat"] != float64(0) ||
+		projection["currentTurnSeat"] != float64(0) ||
+		projection["selectedBoundary"] != float64(0) ||
+		projection["transitionKind"] != "acceptedAction" ||
+		projection["pendingFollowToken"] != nil || capabilities["canAct"] != true {
+		t.Fatalf("unexpected second-action projection: %#v", projection)
+	}
+	if scheduledFollows != 0 {
+		t.Fatalf("second-action character scheduled %d turn follows", scheduledFollows)
+	}
 }
 
 func TestUnifiedProjectionFollowsAnAuthoritativeServerSideAction(t *testing.T) {
 	researchTestInit(t)
+	var scheduledFollow func()
+	scheduleResearchUnifiedFollow = func(_ time.Duration, follow func()) {
+		scheduledFollow = follow
+	}
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
 	viewer := researchHSMTestViewer(join)
 	researchHandleGuestConnected(viewer)
@@ -2768,10 +2982,16 @@ func TestUnifiedProjectionFollowsAnAuthoritativeServerSideAction(t *testing.T) {
 	})
 
 	projection := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
-	if projection["viewedSeat"] != float64(1) ||
+	if projection["viewedSeat"] != float64(0) ||
 		projection["selectedBoundary"] != float64(1) ||
-		projection["projectionRevision"] != float64(2) {
+		projection["projectionRevision"] != float64(2) || scheduledFollow == nil {
 		t.Fatalf("server-side action did not advance the unified projection: %#v", projection)
+	}
+	outbound.messages = nil
+	scheduledFollow()
+	followed := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
+	if followed["viewedSeat"] != float64(1) || followed["projectionRevision"] != float64(3) {
+		t.Fatalf("server-side action did not follow after the delay: %#v", followed)
 	}
 }
 
@@ -2824,6 +3044,10 @@ func TestDelayedDuplicateUnifiedActionCannotBecomeTheNextPlayersAction(t *testin
 
 func TestUnifiedCurrentPlayerActionAutomaticallyFollowsTheNextTurn(t *testing.T) {
 	researchTestInit(t)
+	var scheduledFollow func()
+	scheduleResearchUnifiedFollow = func(_ time.Duration, follow func()) {
+		scheduledFollow = follow
+	}
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
 	viewer := researchHSMTestViewer(join)
 	researchHandleGuestConnected(viewer)
@@ -2843,6 +3067,10 @@ func TestUnifiedCurrentPlayerActionAutomaticallyFollowsTheNextTurn(t *testing.T)
 		ExpectedLiveBoundary:       researchIntPtr(0),
 		ExpectedProjectionRevision: researchUint64Ptr(1),
 	})
+	if scheduledFollow == nil {
+		t.Fatal("current player action did not schedule turn following")
+	}
+	scheduledFollow()
 
 	table.Lock(nil)
 	defer table.Unlock(nil)
@@ -3489,6 +3717,12 @@ func TestUnifiedProjectionTracksAnAuthoritativeServerSidePause(t *testing.T) {
 
 func TestUnifiedTerminateCapabilityMatchesServerAuthorization(t *testing.T) {
 	researchTestInit(t)
+	scheduledFollows := 0
+	var scheduledFollow func()
+	scheduleResearchUnifiedFollow = func(_ time.Duration, follow func()) {
+		scheduledFollows++
+		scheduledFollow = follow
+	}
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
 	viewer := researchHSMTestViewer(join)
 	researchHandleGuestConnected(viewer)
@@ -3500,6 +3734,23 @@ func TestUnifiedTerminateCapabilityMatchesServerAuthorization(t *testing.T) {
 	if capabilities["canTerminate"] != true {
 		t.Fatalf("unified game did not advertise termination authority: %#v", capabilities)
 	}
+	table, _ := tables.Get(created.TableID, true)
+	table.Lock(nil)
+	targetRank := table.Game.Players[1].Hand[0].Rank
+	table.Unlock(nil)
+	outbound.messages = nil
+	commandAction(context.Background(), viewer, &CommandData{
+		TableID:                    created.TableID,
+		Type:                       ActionTypeRankClue,
+		Target:                     1,
+		Value:                      targetRank,
+		ExpectedActorSeat:          researchIntPtr(0),
+		ExpectedLiveBoundary:       researchIntPtr(0),
+		ExpectedProjectionRevision: researchUint64Ptr(1),
+	})
+	if scheduledFollow == nil {
+		t.Fatal("accepted action did not schedule turn following")
+	}
 	outbound.messages = nil
 
 	commandTableTerminate(context.Background(), viewer, &CommandData{TableID: created.TableID})
@@ -3507,6 +3758,9 @@ func TestUnifiedTerminateCapabilityMatchesServerAuthorization(t *testing.T) {
 	terminatedProjection := researchOnlyOutboundPayload(t, outbound.messages, "researchUnifiedProjection")
 	if terminatedProjection["finished"] != true {
 		t.Fatalf("terminal unified projection did not declare completion: %#v", terminatedProjection)
+	}
+	if terminatedProjection["pendingFollowToken"] != nil || scheduledFollows != 1 {
+		t.Fatalf("terminal action scheduled an inappropriate turn follow: %#v", terminatedProjection)
 	}
 	terminatedCapabilities := terminatedProjection["capabilities"].(map[string]interface{})
 	if terminatedCapabilities["canTerminate"] != false {
@@ -3523,7 +3777,11 @@ func TestUnifiedTerminateCapabilityMatchesServerAuthorization(t *testing.T) {
 			t.Fatalf("unified termination leaked an unrevisioned projection message: %#v", outbound.messages)
 		}
 	}
-	table, _ := tables.Get(created.TableID, true)
+	outbound.messages = nil
+	scheduledFollow()
+	if len(outbound.messages) != 0 {
+		t.Fatalf("cancelled follow emitted after termination: %#v", outbound.messages)
+	}
 	table.Lock(nil)
 	defer table.Unlock(nil)
 	if table.Game.EndCondition != EndConditionTerminatedByPlayer {
@@ -4481,6 +4739,7 @@ func researchTestInit(t *testing.T) {
 	variantsInit()
 	charactersInit()
 	actionsFunctionsInit()
+	scheduleResearchUnifiedFollow = func(time.Duration, func()) {}
 }
 
 func researchTestRouter() *gin.Engine {

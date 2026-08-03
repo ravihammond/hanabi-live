@@ -422,6 +422,8 @@ function makeUnifiedProjectionState(
       capabilities: projection.capabilities,
       projectionInstalled: true,
       terminationVote: projection.terminationVote,
+      transitionKind: projection.transitionKind,
+      pendingFollowToken: projection.pendingFollowToken,
     },
     finished: previousState.finished,
     datetimeStarted: previousState.datetimeStarted,

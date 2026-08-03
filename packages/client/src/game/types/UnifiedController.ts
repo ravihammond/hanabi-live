@@ -1,6 +1,8 @@
 import type { CardIdentity, GameAction, PlayerIndex } from "@hanabi-live/game";
 
 export const UNIFIED_MANUAL_PROTOCOL = "unified_manual_v1" as const;
+export const UNIFIED_TRANSITION_ACCEPTED_ACTION = "acceptedAction" as const;
+export type UnifiedTransitionKind = typeof UNIFIED_TRANSITION_ACCEPTED_ACTION;
 
 export interface UnifiedCapabilities {
   readonly canAct: boolean;
@@ -26,6 +28,8 @@ export interface UnifiedControllerState extends UnifiedControllerInit {
   /** Distinguishes init metadata from the first complete projection. */
   readonly projectionInstalled: boolean;
   readonly terminationVote: boolean;
+  readonly transitionKind?: UnifiedTransitionKind;
+  readonly pendingFollowToken?: number;
 }
 
 /** Complete, atomically-installable projection sent by the server. */
@@ -40,4 +44,6 @@ export interface UnifiedProjectionData extends Omit<
   readonly actions: readonly GameAction[];
   readonly notes: readonly string[];
   readonly cardIdentities?: readonly CardIdentity[];
+  readonly transitionKind?: UnifiedTransitionKind;
+  readonly pendingFollowToken?: number;
 }

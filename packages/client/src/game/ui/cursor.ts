@@ -4,7 +4,13 @@ import type { Deck } from "./Deck";
 import type { LayoutChild } from "./LayoutChild";
 import { globals } from "./UIGlobals";
 
-export type CursorType = "default" | "hand" | "dragging" | "look" | "edit";
+export type CursorType =
+  | "default"
+  | "pointer"
+  | "hand"
+  | "dragging"
+  | "look"
+  | "edit";
 
 // Module variables. (This does not have to be on the globals because it is explicitly reset in
 // HanabiUI constructor.)
@@ -31,7 +37,14 @@ export function set(cursorType: CursorType): void {
   }
 
   currentCursorType = cursorType;
-  const cursorTypes = ["default", "hand", "dragging", "look", "edit"];
+  const cursorTypes: readonly CursorType[] = [
+    "default",
+    "pointer",
+    "hand",
+    "dragging",
+    "look",
+    "edit",
+  ];
 
   for (const type of cursorTypes) {
     gameDiv.classList.remove(`game-cursor-${type}`);

@@ -7,8 +7,10 @@ import { globals } from "./UIGlobals";
 import { backToLobby } from "./backToLobby";
 import { LABEL_COLOR } from "./constants";
 import * as cursor from "./cursor";
+import { drawLayer } from "./konvaHelpers";
 import * as konvaTooltips from "./konvaTooltips";
 import {
+  getUnifiedController,
   isUnifiedController,
   requestUnifiedProjection,
 } from "./unifiedController";
@@ -76,15 +78,19 @@ export class NameFrame extends Konva.Group {
       },
     );
     this.playerName.on("mouseenter", () => {
-      if (globals.store !== null && isUnifiedController(globals.state)) {
-        cursor.set("hand");
+      const controller =
+        globals.store === null ? null : getUnifiedController(globals.state);
+      if (controller !== null && this.playerIndex !== controller.viewedSeat) {
+        cursor.set("pointer");
         this.playerName.fill("#ffdf00");
+        drawLayer(this.playerName);
       }
     });
     this.playerName.on("mouseleave", () => {
       if (globals.store !== null && isUnifiedController(globals.state)) {
         cursor.set("default");
         this.playerName.fill(this.leftLine.stroke());
+        drawLayer(this.playerName);
       }
     });
     this.add(this.playerName);

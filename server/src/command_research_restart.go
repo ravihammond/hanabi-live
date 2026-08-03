@@ -66,7 +66,8 @@ func commandResearchRestart(ctx context.Context, s *Session, d *CommandData) {
 	}
 	if table, ok := tables.Get(d.TableID, true); ok {
 		table.Lock(ctx)
-		if _, unified := table.researchUnifiedControllerForSession(s); unified {
+		if controller, unified := table.researchUnifiedControllerForSession(s); unified {
+			invalidateResearchUnifiedFollow(controller)
 			reviseResearchUnifiedProjection(table)
 		}
 		table.Unlock(ctx)

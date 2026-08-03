@@ -2,18 +2,89 @@ package main
 
 import "context"
 
-func researchFollowUnifiedTurn(table *Table, viewedSeat int) {
+// researchProjectUnifiedAction publishes the actor-relative action delta before scheduling the
+// guarded perspective follow. The caller holds the table mutex; the scheduled callback does not.
+func researchProjectUnifiedAction(
+	table *Table,
+	game *Game,
+	actorSeat int,
+	previousLiveBoundary int,
+) {
 	controller := table.ResearchUnifiedController
 	if controller == nil {
 		return
 	}
-	controller.ViewedSeat = viewedSeat
-	controller.SelectedBoundary = researchUnifiedLiveBoundary(table.Game)
-	controller.ProjectionRevision++
-	for len(controller.ActionCutoffs) <= controller.SelectedBoundary {
-		controller.ActionCutoffs = append(controller.ActionCutoffs, len(table.Game.Actions))
+	liveBoundary := researchUnifiedLiveBoundary(game)
+	for len(controller.ActionCutoffs) <= liveBoundary {
+		controller.ActionCutoffs = append(controller.ActionCutoffs, len(game.Actions))
 	}
-	controller.ActionCutoffs[controller.SelectedBoundary] = len(table.Game.Actions)
+	controller.ActionCutoffs[liveBoundary] = len(game.Actions)
+
+	invalidateResearchUnifiedFollow(controller)
+	if controller.ViewedSeat != actorSeat || controller.SelectedBoundary != previousLiveBoundary {
+		controller.ProjectionRevision++
+		emitResearchUnifiedProjectionForController(table, controller)
+		return
+	}
+
+	controller.ViewedSeat = actorSeat
+	controller.SelectedBoundary = liveBoundary
+	controller.TransitionKind = researchUnifiedTransitionAcceptedAction
+	if game.EndCondition == EndConditionInProgress && game.ActivePlayerIndex != actorSeat {
+		controller.NextFollowToken++
+		controller.PendingFollowToken = controller.NextFollowToken
+	}
+	controller.ProjectionRevision++
+	updateResearchUnifiedShadow(table, controller, actorSeat)
+	emitResearchUnifiedProjectionForController(table, controller)
+
+	if controller.PendingFollowToken == 0 {
+		return
+	}
+	token := controller.PendingFollowToken
+	nextSeat := game.ActivePlayerIndex
+	scheduleResearchUnifiedFollow(researchUnifiedFollowDelay, func() {
+		researchCompleteUnifiedFollow(table, game, controller, token, liveBoundary, nextSeat)
+	})
+}
+
+func researchCompleteUnifiedFollow(
+	table *Table,
+	game *Game,
+	controller *ResearchUnifiedController,
+	token uint64,
+	liveBoundary int,
+	nextSeat int,
+) {
+	// Resolve the registered table before taking its mutex so a replaced table generation cannot be
+	// mistaken for the generation that scheduled this callback.
+	registeredTable, exists := tables.Get(table.ID, true)
+	if !exists || registeredTable != table {
+		return
+	}
+	table.Lock(nil)
+	defer table.Unlock(nil)
+	if table.Deleted || table.Game != game || table.ResearchUnifiedController != controller ||
+		controller.PendingFollowToken != token ||
+		controller.TransitionKind != researchUnifiedTransitionAcceptedAction ||
+		controller.SelectedBoundary != liveBoundary ||
+		researchUnifiedLiveBoundary(game) != liveBoundary ||
+		game.EndCondition != EndConditionInProgress || game.ActivePlayerIndex != nextSeat {
+		return
+	}
+
+	controller.ViewedSeat = nextSeat
+	invalidateResearchUnifiedFollow(controller)
+	controller.ProjectionRevision++
+	updateResearchUnifiedShadow(table, controller, nextSeat)
+	emitResearchUnifiedProjectionForController(table, controller)
+}
+
+func updateResearchUnifiedShadow(
+	table *Table,
+	controller *ResearchUnifiedController,
+	viewedSeat int,
+) {
 	spectatorIndex := table.GetSpectatorIndexFromID(controller.UserID)
 	if spectatorIndex < 0 {
 		return
@@ -21,7 +92,15 @@ func researchFollowUnifiedTurn(table *Table, viewedSeat int) {
 	spectator := table.Spectators[spectatorIndex]
 	spectator.ShadowingPlayerIndex = viewedSeat
 	spectator.ShadowingPlayerUsername = table.Players[viewedSeat].Name
-	emitResearchUnifiedProjection(spectator.Session, table, controller)
+}
+
+func emitResearchUnifiedProjectionForController(
+	table *Table,
+	controller *ResearchUnifiedController,
+) {
+	if spectatorIndex := table.GetSpectatorIndexFromID(controller.UserID); spectatorIndex >= 0 {
+		emitResearchUnifiedProjection(table.Spectators[spectatorIndex].Session, table, controller)
+	}
 }
 
 // commandResearchPerspective atomically replaces the observer projection for a unified controller.
@@ -61,6 +140,9 @@ func commandResearchPerspective(ctx context.Context, s *Session, d *CommandData)
 		s.Warning("That is an invalid unified history boundary.")
 		return
 	}
+	if viewedSeat == controller.ViewedSeat && selectedBoundary == controller.SelectedBoundary {
+		return
+	}
 	spectatorIndex := table.GetSpectatorIndexFromID(s.UserID)
 	if spectatorIndex < 0 {
 		s.Warning("The unified session is not attached to this game.")
@@ -69,6 +151,7 @@ func commandResearchPerspective(ctx context.Context, s *Session, d *CommandData)
 	candidate := *controller
 	candidate.ViewedSeat = viewedSeat
 	candidate.SelectedBoundary = selectedBoundary
+	invalidateResearchUnifiedFollow(&candidate)
 	candidate.ProjectionRevision++
 	projection, err := resolveResearchUnifiedProjection(table, &candidate)
 	if err != nil {
@@ -84,4 +167,6 @@ func commandResearchPerspective(ctx context.Context, s *Session, d *CommandData)
 	controller.ViewedSeat = candidate.ViewedSeat
 	controller.SelectedBoundary = candidate.SelectedBoundary
 	controller.ProjectionRevision = candidate.ProjectionRevision
+	controller.TransitionKind = candidate.TransitionKind
+	controller.PendingFollowToken = candidate.PendingFollowToken
 }

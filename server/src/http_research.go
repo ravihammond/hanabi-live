@@ -839,6 +839,7 @@ func researchRestartSingleGame(c *gin.Context) {
 		NoTablesLock: true,
 	}, table)
 	if controller := table.ResearchUnifiedController; controller != nil {
+		invalidateResearchUnifiedFollow(controller)
 		controller.ViewedSeat = table.Game.ActivePlayerIndex
 		controller.SelectedBoundary = researchUnifiedLiveBoundary(table.Game)
 		controller.ActionCutoffs = []int{len(table.Game.Actions)}
