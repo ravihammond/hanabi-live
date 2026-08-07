@@ -5,10 +5,6 @@
 import { interfaceSatisfiesEnum } from "complete-common";
 import { z } from "zod";
 import { ClientCommand } from "./enums/ClientCommand";
-import {
-  hsmPhysicalTruthRequestCommand,
-  hsmSnapshotRequestCommand,
-} from "./researchHSM";
 
 const clientCommandChatData = z
   .object({
@@ -43,12 +39,6 @@ export interface ClientCommandChatPMData extends z.infer<
 export interface ClientCommandData {
   [ClientCommand.chat]: ClientCommandChatData;
   [ClientCommand.chatPM]: ClientCommandChatPMData;
-  [ClientCommand.researchHSMPhysicalTruthRequest]: z.infer<
-    typeof hsmPhysicalTruthRequestCommand
-  >;
-  [ClientCommand.researchHSMRequest]: z.infer<
-    typeof hsmSnapshotRequestCommand
-  >;
 }
 
 interfaceSatisfiesEnum<ClientCommandData, ClientCommand>();
@@ -56,7 +46,4 @@ interfaceSatisfiesEnum<ClientCommandData, ClientCommand>();
 export const CLIENT_COMMAND_SCHEMAS = {
   [ClientCommand.chat]: clientCommandChatData,
   [ClientCommand.chatPM]: clientCommandChatPMData,
-  [ClientCommand.researchHSMPhysicalTruthRequest]:
-    hsmPhysicalTruthRequestCommand,
-  [ClientCommand.researchHSMRequest]: hsmSnapshotRequestCommand,
 } as const satisfies Record<ClientCommand, unknown>;

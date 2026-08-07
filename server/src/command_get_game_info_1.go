@@ -25,9 +25,6 @@ import (
 //	  tableID: 5,
 //	}
 func commandGetGameInfo1(ctx context.Context, s *Session, d *CommandData) {
-	// Snapshot registry-owned HSM metadata before taking the table lock. The unified controller
-	// itself is table-owned and is resolved below while that lock is held.
-	hsmDebug := researchHSMDebugInitForUser(s.UserID)
 	t, exists := getTableAndLock(ctx, s, d.TableID, !d.NoTableLock, !d.NoTablesLock)
 	if !exists {
 		return
@@ -57,7 +54,7 @@ func commandGetGameInfo1(ctx context.Context, s *Session, d *CommandData) {
 		}
 	}
 
-	getGameInfo1(s, t, playerIndex, spectatorIndex, hsmDebug)
+	getGameInfo1(s, t, playerIndex, spectatorIndex)
 }
 
 func getGameInfo1(
@@ -65,7 +62,6 @@ func getGameInfo1(
 	t *Table,
 	playerIndex int,
 	spectatorIndex int,
-	hsmDebug *ResearchHSMDebugInit,
 ) {
 	// Local variables
 	g := t.Game
@@ -169,7 +165,6 @@ func getGameInfo1(
 		ResearchRestartController    bool                           `json:"researchRestartController"`
 		ResearchUnified              bool                           `json:"researchUnified"`
 		UnifiedController            *ResearchUnifiedControllerInit `json:"unifiedController,omitempty"`
-		HSMDebug                     *ResearchHSMDebugInit          `json:"hsmDebug,omitempty"`
 	}
 
 	s.Emit("init", &InitMessage{
@@ -210,6 +205,5 @@ func getGameInfo1(
 				s.UserID == t.ExtraOptions.ResearchRestartControllerID),
 		ResearchUnified:   researchUnified,
 		UnifiedController: unifiedControllerInit,
-		HSMDebug:          hsmDebug,
 	})
 }

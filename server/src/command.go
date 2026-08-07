@@ -75,14 +75,6 @@ type CommandData struct {
 	HidePregame bool   `json:"hidePregame"`
 	RestartKind string `json:"restartKind"`
 
-	// Read-only temporal HSM inspection.
-	HSMProtocolVersion     int    `json:"protocolVersion"`
-	HSMArchiveGenerationID uint32 `json:"archiveGenerationID"`
-	HSMClientRequestID     int    `json:"clientRequestID"`
-	HSMTargetBoundary      int    `json:"targetBoundary"`
-	HSMEvidenceBoundary    int    `json:"evidenceBoundary"`
-	HSMPerspectivePlayer   int    `json:"perspectivePlayer"`
-
 	// Unified projection navigation. Both fields are required for researchPerspective.
 	UnifiedViewedSeat       *int `json:"viewedSeat"`
 	UnifiedSelectedBoundary *int `json:"selectedBoundary"`
@@ -138,8 +130,6 @@ func commandInit() {
 	commandMap["tableRestart"] = commandTableRestart
 	commandMap["researchRestart"] = commandResearchRestart
 	commandMap["researchPerspective"] = commandResearchPerspective
-	commandMap["researchHSMRequest"] = commandResearchHSMRequest
-	commandMap["researchHSMPhysicalTruthRequest"] = commandResearchHSMPhysicalTruthRequest
 	commandMap["tableUpdate"] = commandTableUpdate
 	commandMap["tableSuggest"] = commandTableSuggest
 

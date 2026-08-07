@@ -10,7 +10,7 @@ func TestResearchGuestSkipsPersistentAccountHydration(t *testing.T) {
 		context.Background(),
 		nil,
 		-100,
-		"HSM Debug Spectator",
+		"Research Guest",
 		true,
 	)
 

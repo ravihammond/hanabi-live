@@ -19,18 +19,9 @@ import { globals } from "./UIGlobals";
 import * as arrows from "./arrows";
 import type { PlayerButton } from "./controls/PlayerButton";
 import { colorToColorIndex } from "./convert";
-import type { HSMActionAnnotation } from "./hsmInspector";
-import { getHSMActionAnnotation } from "./hsmInspector";
-import { drawLayer } from "./konvaHelpers";
 import * as turn from "./turn";
 
-const STANDARD_CLUE_VALUE_COUNT = 5;
-// Hanabi.live orders colors red/yellow/green/blue/purple. Canonical HSM/JAXMARL order swaps the
-// last two colors.
-const HANABI_LIVE_TO_CANONICAL_COLOR = [0, 1, 2, 4, 3] as const;
-
 export function checkLegal(): void {
-  clearHSMClueAnnotations();
   const clueTargetButtonGroup =
     globals.state.replay.hypothetical === null
       ? globals.elements.clueTargetButtonGroup
@@ -63,7 +54,6 @@ export function checkLegal(): void {
     globals.elements.giveClueButton!.setEnabled(false);
     return;
   }
-  renderHSMClueAnnotations(who, currentPlayerIndex);
   if (clueButton === undefined || clueButton === null) {
     // They have not selected a clue type.
     globals.elements.giveClueButton!.setEnabled(false);
@@ -100,100 +90,6 @@ export function checkLegal(): void {
 
   globals.elements.giveClueButton!.setEnabled(enabled);
 }
-
-function clearHSMClueAnnotations() {
-  for (const clueButton of [
-    ...globals.elements.colorClueButtons,
-    ...globals.elements.rankClueButtons,
-  ]) {
-    applyHSMClueAnnotation(clueButton, null);
-  }
-}
-
-function renderHSMClueAnnotations(target: number, actor: number) {
-  const { numPlayers } = globals.options;
-  const handSize = numPlayers <= 3 ? 5 : 4;
-  const relativeTarget = (target - actor - 1 + numPlayers) % numPlayers;
-  for (const clueButton of [
-    ...globals.elements.colorClueButtons,
-    ...globals.elements.rankClueButtons,
-  ]) {
-    let clueValue: number;
-    let clueAxis: "color" | "rank";
-    if (clueButton.clue.type === ClueType.Color) {
-      const colorIndex = colorToColorIndex(
-        clueButton.clue.value,
-        globals.variant,
-      );
-      if (colorIndex === undefined) {
-        continue;
-      }
-      const canonicalColor =
-        colorIndex < 0
-          ? undefined
-          : HANABI_LIVE_TO_CANONICAL_COLOR.at(colorIndex);
-      if (canonicalColor === undefined) {
-        continue;
-      }
-      clueAxis = "color";
-      clueValue = canonicalColor;
-    } else {
-      clueAxis = "rank";
-      clueValue = clueButton.clue.value - 1;
-    }
-    const actionID = canonicalClueActionID(
-      clueAxis,
-      clueValue,
-      relativeTarget,
-      numPlayers,
-      handSize,
-    );
-    applyHSMClueAnnotation(clueButton, getHSMActionAnnotation(actionID));
-  }
-}
-
-function canonicalClueActionID(
-  clueAxis: "color" | "rank",
-  clueValue: number,
-  relativeTarget: number,
-  numPlayers: number,
-  handSize: number,
-): number {
-  const cardActionCount = 2 * handSize;
-  const clueAxisOffset =
-    clueAxis === "rank" ? (numPlayers - 1) * STANDARD_CLUE_VALUE_COUNT : 0;
-  return (
-    cardActionCount
-    + clueAxisOffset
-    + relativeTarget * STANDARD_CLUE_VALUE_COUNT
-    + clueValue
-  );
-}
-
-function applyHSMClueAnnotation(
-  clueButton: ColorButton | RankButton,
-  annotation: HSMActionAnnotation,
-) {
-  let stroke = "";
-  if (annotation === "follow") {
-    stroke = "#55c870";
-  } else if (annotation === "violation") {
-    stroke = "#ef625b";
-  }
-  clueButton.background.stroke(stroke);
-  clueButton.background.strokeWidth(annotation === null ? 0 : 3);
-  clueButton.background.dash(annotation === "violation" ? [8, 4] : []);
-  drawLayer(clueButton);
-}
-
-globalThis.addEventListener("hsm-diagnostic-render", () => {
-  if (
-    globals.elements.giveClueButton !== null
-    && globals.state.visibleState !== null
-  ) {
-    checkLegal();
-  }
-});
 
 function showClueMatch(target: number, clue: Clue): boolean {
   arrows.hideAll();

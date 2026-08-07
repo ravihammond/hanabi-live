@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -29,61 +28,6 @@ type researchRecordingOutbound struct {
 	messages []string
 }
 
-type researchHSMResponseWire struct {
-	ProtocolVersion                int    `json:"protocolVersion"`
-	ServerRequestID                int    `json:"serverRequestID"`
-	ClientRequestID                int    `json:"clientRequestID"`
-	ArchiveGenerationID            uint32 `json:"archiveGenerationID"`
-	TargetBoundary                 int    `json:"targetBoundary"`
-	EvidenceBoundary               int    `json:"evidenceBoundary"`
-	PerspectivePlayer              int    `json:"perspectivePlayer"`
-	ActorPlayer                    int    `json:"actorPlayer"`
-	SemanticProfileID              int    `json:"semanticProfileID"`
-	AuthorityLegalProjectionDigest string `json:"authorityLegalProjectionDigest"`
-}
-
-type researchHSMSnapshotWire struct {
-	researchHSMResponseWire
-	Snapshot ResearchHSMSnapshot `json:"snapshot"`
-}
-
-type researchHSMSnapshotFailureWire struct {
-	researchHSMResponseWire
-	Error   string             `json:"error"`
-	Failure ResearchHSMFailure `json:"failure"`
-}
-
-type researchHSMPhysicalTruthWireIdentity struct {
-	ProtocolVersion     int    `json:"protocolVersion"`
-	ServerRequestID     int    `json:"serverRequestID"`
-	ClientRequestID     int    `json:"clientRequestID"`
-	ArchiveGenerationID uint32 `json:"archiveGenerationID"`
-	TargetBoundary      int    `json:"targetBoundary"`
-	PerspectivePlayer   int    `json:"perspectivePlayer"`
-}
-
-type researchHSMPhysicalTruthWire struct {
-	researchHSMPhysicalTruthWireIdentity
-	Overlay ResearchHSMPhysicalTruthOverlay `json:"overlay"`
-}
-
-type researchHSMPhysicalTruthFailureWire struct {
-	researchHSMPhysicalTruthWireIdentity
-	Error string `json:"error"`
-}
-
-type researchHSMTransportGolden struct {
-	ProtocolVersion       int                                  `json:"protocolVersion"`
-	SnapshotPending       researchHSMResponseWire              `json:"snapshotPending"`
-	SnapshotMessage       researchHSMSnapshotWire              `json:"snapshotMessage"`
-	SnapshotFailure       researchHSMSnapshotFailureWire       `json:"snapshotFailure"`
-	SnapshotRejected      ResearchHSMRequestRejection          `json:"snapshotRejected"`
-	PhysicalTruthPending  researchHSMPhysicalTruthWireIdentity `json:"physicalTruthPending"`
-	PhysicalTruthMessage  researchHSMPhysicalTruthWire         `json:"physicalTruthMessage"`
-	PhysicalTruthFailure  researchHSMPhysicalTruthFailureWire  `json:"physicalTruthFailure"`
-	PhysicalTruthRejected ResearchHSMPhysicalTruthRejection    `json:"physicalTruthRejected"`
-}
-
 func (outbound *researchRecordingOutbound) Ready() bool {
 	return outbound.ready
 }
@@ -96,7 +40,7 @@ func (outbound *researchRecordingOutbound) Write(message []byte) error {
 	return nil
 }
 
-func researchHSMTestViewer(join *ResearchJoinToken) *Session {
+func researchTestViewer(join *ResearchJoinToken) *Session {
 	viewer := NewFakeSession(join.UserID, join.Username)
 	viewer.outbound = &researchRecordingOutbound{ready: true}
 	return viewer
@@ -224,7 +168,7 @@ func TestRestartEndpointRejectsAConcurrentLifecycleOwnerWithoutConsumingTheReque
 	commandInit()
 	router := researchTestRouter()
 	created, join := researchCreateUnifiedTwoPlayerGame(t, router)
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	commandResearchRestart(context.Background(), viewer, &CommandData{
 		TableID:     created.TableID,
@@ -278,7 +222,7 @@ func TestUnifiedControllerOwnsPersistentSingleGameRestartRequests(t *testing.T) 
 	commandInit()
 	router := researchTestRouter()
 	created, join := researchCreateUnifiedTwoPlayerGame(t, router)
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 
 	commandResearchRestart(context.Background(), viewer, &CommandData{
@@ -312,7 +256,7 @@ func TestUnifiedRestartResetsAndRevisesTheControllerProjection(t *testing.T) {
 	commandInit()
 	router := researchTestRouter()
 	created, join := researchCreateUnifiedTwoPlayerGame(t, router)
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	table, _ := tables.Get(created.TableID, true)
 	table.Lock(nil)
@@ -370,1620 +314,6 @@ func TestUnifiedRestartResetsAndRevisesTheControllerProjection(t *testing.T) {
 		if projection[key] != expected {
 			t.Fatalf("restart did not reset %s: got %#v, want %#v", key, projection[key], expected)
 		}
-	}
-}
-
-func TestSingleGameCreatesOnlyAuthorizedHSMJoinLinks(t *testing.T) {
-	researchTestInit(t)
-	router := researchTestRouter()
-	payload := researchSingleGamePayload()
-	payload.RosterPlayers[0].HSMDebugCapability = "switchable"
-	payload.HSMDebugSpectator = &ResearchHSMDebugSpectator{
-		Identity:              "hsm_debug_spectator",
-		Capability:            "switchable",
-		HSMPhysicalTruthGrant: true,
-	}
-
-	response := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/single-game",
-		payload,
-		"secret",
-	)
-	if response.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
-	}
-	var created CreatedResearchSingleGame
-	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
-		t.Fatalf("failed to parse creation response: %v", err)
-	}
-
-	if _, ok := created.JoinLinks["roster_player_0"]; !ok {
-		t.Fatal("authorized Debug Participant did not receive its normal join link")
-	}
-	if _, ok := created.JoinLinks["hsm_debug_spectator"]; !ok {
-		t.Fatal("configured HSM Debug Spectator did not receive a join link")
-	}
-	if _, ok := created.JoinLinks["roster_player_1"]; ok {
-		t.Fatal("bot or unauthorized Roster Player received a browser join link")
-	}
-
-	participantToken := path.Base(created.JoinLinks["roster_player_0"])
-	participant := researchJoinTokens[participantToken]
-	if participant.HSMDebugCapability != "switchable" ||
-		participant.HSMIdentity != "roster_player_0" ||
-		participant.HSMPhysicalTruthGrant {
-		t.Fatalf("participant capability was not bound to its join token: %#v", participant)
-	}
-	spectatorToken := path.Base(created.JoinLinks["hsm_debug_spectator"])
-	spectator := researchJoinTokens[spectatorToken]
-	if spectator.SeatIndex != -1 ||
-		spectator.HSMDebugCapability != "switchable" ||
-		!spectator.HSMPhysicalTruthGrant {
-		t.Fatalf("debug spectator must remain seatless and switchable: %#v", spectator)
-	}
-	participantInit := researchHSMDebugInitForUser(participant.UserID)
-	spectatorInit := researchHSMDebugInitForUser(spectator.UserID)
-	if participantInit.HSMArchiveGenerationID != created.HSMArchiveGenerationID ||
-		participantInit.PhysicalTruthGranted {
-		t.Fatalf("participant initialization widened authority: %#v", participantInit)
-	}
-	if spectatorInit.HSMArchiveGenerationID != created.HSMArchiveGenerationID ||
-		!spectatorInit.PhysicalTruthGranted {
-		t.Fatalf("spectator initialization lost its explicit grant: %#v", spectatorInit)
-	}
-}
-
-func TestSingleGameRejectsInvalidHSMViewerAuthorization(t *testing.T) {
-	tests := []struct {
-		name   string
-		mutate func(*ResearchCreatePayload)
-	}{
-		{
-			name: "unknown participant capability",
-			mutate: func(payload *ResearchCreatePayload) {
-				payload.RosterPlayers[0].HSMDebugCapability = "own-perspective"
-			},
-		},
-		{
-			name: "unknown spectator capability",
-			mutate: func(payload *ResearchCreatePayload) {
-				payload.HSMDebugSpectator = &ResearchHSMDebugSpectator{
-					Identity:   "auditor",
-					Capability: "omniscient",
-				}
-			},
-		},
-		{
-			name: "seatless spectator cannot have own-perspective capability",
-			mutate: func(payload *ResearchCreatePayload) {
-				payload.HSMDebugSpectator = &ResearchHSMDebugSpectator{
-					Identity:   "auditor",
-					Capability: ResearchHSMCapabilityOwnPerspective,
-				}
-			},
-		},
-		{
-			name: "spectator identity collides with roster identity",
-			mutate: func(payload *ResearchCreatePayload) {
-				payload.HSMDebugSpectator = &ResearchHSMDebugSpectator{
-					Identity:   payload.RosterPlayers[0].RosterPlayerID,
-					Capability: "switchable",
-				}
-			},
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			researchTestInit(t)
-			router := researchTestRouter()
-			payload := researchSingleGamePayload()
-			test.mutate(&payload)
-
-			response := researchJSONRequest(
-				t,
-				router,
-				http.MethodPost,
-				"/research/single-game",
-				payload,
-				"secret",
-			)
-
-			if response.Code != http.StatusUnprocessableEntity {
-				t.Fatalf(
-					"expected invalid HSM authorization to return 422, got %d: %s",
-					response.Code,
-					response.Body.String(),
-				)
-			}
-		})
-	}
-}
-
-func TestPregameTableRejectsHSMViewerAuthorization(t *testing.T) {
-	researchTestInit(t)
-	router := researchTestRouter()
-	payload := researchSingleGamePayload()
-	payload.Mode = "pregame_table"
-	payload.Game.GameIndex = 0
-	payload.Game.GameSeed = nil
-	payload.RosterPlayers[0].HSMDebugCapability =
-		ResearchHSMCapabilityOwnPerspective
-
-	response := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/pregame-table",
-		payload,
-		"secret",
-	)
-	if response.Code != http.StatusUnprocessableEntity {
-		t.Fatalf(
-			"expected pregame HSM authorization to be rejected with 422, got %d: %s",
-			response.Code,
-			response.Body.String(),
-		)
-	}
-}
-
-func TestHSMViewerRoleAndPrincipalAreSeparateFromDisplayIdentity(t *testing.T) {
-	researchTestInit(t)
-	router := researchTestRouter()
-	payload := researchSingleGamePayload()
-	payload.RosterPlayers[0].HSMDebugCapability = ResearchHSMCapabilitySwitchable
-	payload.HSMDebugSpectator = &ResearchHSMDebugSpectator{
-		Identity:   "audit-viewer",
-		Capability: ResearchHSMCapabilitySwitchable,
-	}
-
-	response := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/single-game",
-		payload,
-		"secret",
-	)
-	var created CreatedResearchSingleGame
-	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
-		t.Fatalf("failed to parse creation response: %v", err)
-	}
-	participant := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
-	spectator := researchJoinTokens[path.Base(created.JoinLinks["audit-viewer"])]
-	if participant.HSMPrincipalID == "" ||
-		spectator.HSMPrincipalID == "" ||
-		participant.HSMPrincipalID == spectator.HSMPrincipalID {
-		t.Fatalf("viewer principals are missing or not unique: %#v %#v", participant, spectator)
-	}
-
-	participantInit := researchHSMDebugInitForUser(participant.UserID)
-	spectatorInit := researchHSMDebugInitForUser(spectator.UserID)
-	if participantInit.ViewerKind != ResearchHSMViewerKindParticipant {
-		t.Fatalf("participant viewer kind was inferred incorrectly: %#v", participantInit)
-	}
-	if spectatorInit.ViewerKind != ResearchHSMViewerKindSpectator {
-		t.Fatalf("arbitrary spectator identity lost its explicit viewer kind: %#v", spectatorInit)
-	}
-}
-
-func TestHSMViewerKindCannotBecomePlayerAuthorityOrPlayerChatIdentity(t *testing.T) {
-	researchTestInit(t)
-	commandInit()
-	router := researchTestRouter()
-	payload := researchSingleGamePayload()
-	payload.HSMDebugSpectator = &ResearchHSMDebugSpectator{
-		Identity:   "audit-viewer",
-		Capability: ResearchHSMCapabilitySwitchable,
-	}
-	response := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/single-game",
-		payload,
-		"secret",
-	)
-	var created CreatedResearchSingleGame
-	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
-		t.Fatalf("failed to parse creation response: %v", err)
-	}
-	participantJoin :=
-		researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
-	researchHandleGuestConnected(
-		NewFakeSession(participantJoin.UserID, participantJoin.Username),
-	)
-	spectatorJoin := researchJoinTokens[path.Base(created.JoinLinks["audit-viewer"])]
-	spectator := researchHSMTestViewer(spectatorJoin)
-	researchHandleGuestConnected(spectator)
-
-	table, ok := tables.Get(created.TableID, true)
-	if !ok {
-		t.Fatalf("created table %d is missing", created.TableID)
-	}
-	table.Lock(nil)
-	beforeActions := len(table.Game.Actions2)
-	table.Unlock(nil)
-	commandAction(context.Background(), spectator, &CommandData{
-		TableID: created.TableID,
-		Type:    ActionTypePlay,
-		Target:  0,
-	})
-	commandResearchRestart(context.Background(), spectator, &CommandData{
-		TableID:     created.TableID,
-		RestartKind: researchRestartSameSeed,
-	})
-	commandChat(context.Background(), spectator, &CommandData{
-		Room:     "table" + strconv.FormatUint(created.TableID, 10),
-		Msg:      "observer note",
-		Username: participantJoin.Username,
-	})
-
-	table.Lock(nil)
-	defer table.Unlock(nil)
-	if len(table.Game.Actions2) != beforeActions {
-		t.Fatal("seatless HSM spectator exercised player action authority")
-	}
-	if researchSessions[created.GameID].PendingRestartRequest != nil {
-		t.Fatal("seatless HSM spectator exercised restart-controller authority")
-	}
-	if len(table.Chat) == 0 {
-		t.Fatal("expected spectator note to reach chat under its observer identity")
-	}
-	lastChat := table.Chat[len(table.Chat)-1]
-	if lastChat.Username != spectator.Username ||
-		lastChat.Username == participantJoin.Username {
-		t.Fatalf("spectator chat impersonated a Roster Player: %#v", lastChat)
-	}
-}
-
-func TestPhysicalTruthUsesItsOwnGrantedRequestAndPublicationChannel(t *testing.T) {
-	researchTestInit(t)
-	commandInit()
-	router := researchTestRouter()
-	payload := researchSingleGamePayload()
-	payload.HSMDebugSpectator = &ResearchHSMDebugSpectator{
-		Identity:              "hsm_debug_spectator",
-		Capability:            "switchable",
-		HSMPhysicalTruthGrant: true,
-	}
-	response := researchJSONRequest(t, router, http.MethodPost, "/research/single-game", payload, "secret")
-	var created CreatedResearchSingleGame
-	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
-		t.Fatalf("failed to parse creation response: %v", err)
-	}
-	participantJoin := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
-	participant := NewFakeSession(participantJoin.UserID, participantJoin.Username)
-	researchHandleGuestConnected(participant)
-	join := researchJoinTokens[path.Base(created.JoinLinks["hsm_debug_spectator"])]
-	viewer := researchHSMTestViewer(join)
-	researchHandleGuestConnected(viewer)
-
-	commandResearchHSMPhysicalTruthRequest(context.Background(), viewer, &CommandData{
-		TableID:                created.TableID,
-		HSMProtocolVersion:     ResearchHSMProtocolVersion,
-		HSMArchiveGenerationID: created.HSMArchiveGenerationID,
-		HSMClientRequestID:     73,
-		HSMTargetBoundary:      0,
-		HSMPerspectivePlayer:   0,
-	})
-
-	session := researchSessions[created.GameID]
-	session.HSMMutex.Lock()
-	if len(session.PendingHSMSnapshotRequests) != 0 || len(session.PendingHSMPhysicalTruthRequests) != 1 {
-		t.Fatalf(
-			"Physical Truth crossed semantic queues: snapshots=%#v truth=%#v",
-			session.PendingHSMSnapshotRequests,
-			session.PendingHSMPhysicalTruthRequests,
-		)
-	}
-	var request ResearchHSMPhysicalTruthRequest
-	for _, pending := range session.PendingHSMPhysicalTruthRequests {
-		request = *pending
-	}
-	session.HSMMutex.Unlock()
-	if request.ClientRequestID != 73 ||
-		request.ArchiveGenerationID != created.HSMArchiveGenerationID ||
-		request.Identity != "hsm_debug_spectator" {
-		t.Fatalf("Physical Truth correlation or authority was lost: %#v", request)
-	}
-
-	publication := ResearchHSMPhysicalTruthPublication{
-		ResearchHSMPhysicalTruthIdentity: physicalTruthIdentityForRequest(&request),
-		Overlay: ResearchHSMPhysicalTruthOverlay{
-			Cards: []ResearchHSMPhysicalTruthCard{
-				{StableCardID: 12, Identity: 4},
-			},
-		},
-	}
-	published := researchJSONRequest(t, router, http.MethodPost, "/research/sessions/"+created.GameID+"/hsm-physical-truth", publication, "secret")
-	if published.Code != http.StatusOK {
-		t.Fatalf("expected Physical Truth publication 200, got %d: %s", published.Code, published.Body.String())
-	}
-	session.HSMMutex.Lock()
-	defer session.HSMMutex.Unlock()
-	if len(session.PendingHSMPhysicalTruthRequests) != 0 {
-		t.Fatalf("published Physical Truth remained pending: %#v", session.PendingHSMPhysicalTruthRequests)
-	}
-}
-
-func TestPhysicalTruthAuthorizationDependsOnlyOnItsExplicitGrant(t *testing.T) {
-	researchTestInit(t)
-	commandInit()
-	router := researchTestRouter()
-	payload := researchSingleGamePayload()
-	payload.RosterPlayers[0].HSMDebugCapability = ResearchHSMCapabilityOwnPerspective
-	payload.RosterPlayers[0].HSMPhysicalTruthGrant = true
-	response := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/single-game",
-		payload,
-		"secret",
-	)
-	var created CreatedResearchSingleGame
-	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
-		t.Fatalf("failed to parse creation response: %v", err)
-	}
-	join := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
-	viewer := researchHSMTestViewer(join)
-	researchHandleGuestConnected(viewer)
-
-	commandResearchHSMPhysicalTruthRequest(context.Background(), viewer, &CommandData{
-		TableID:                created.TableID,
-		HSMProtocolVersion:     ResearchHSMProtocolVersion,
-		HSMArchiveGenerationID: created.HSMArchiveGenerationID,
-		HSMClientRequestID:     1,
-		HSMTargetBoundary:      0,
-		HSMPerspectivePlayer:   join.SeatIndex,
-	})
-
-	session := researchSessions[created.GameID]
-	session.HSMMutex.Lock()
-	defer session.HSMMutex.Unlock()
-	if len(session.PendingHSMPhysicalTruthRequests) != 1 {
-		t.Fatalf(
-			"explicit Physical Truth grant did not authorize own-perspective live inspection: %#v",
-			session.PendingHSMPhysicalTruthRequests,
-		)
-	}
-}
-
-func TestAuthorizedHSMRequestIsPolledAndPublishedExactlyOnce(t *testing.T) {
-	researchTestInit(t)
-	commandInit()
-	router := researchTestRouter()
-	payload := researchSingleGamePayload()
-	payload.RosterPlayers[0].HSMDebugCapability = "switchable"
-	response := researchJSONRequest(t, router, http.MethodPost, "/research/single-game", payload, "secret")
-	if response.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
-	}
-	var created CreatedResearchSingleGame
-	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
-		t.Fatalf("failed to parse creation response: %v", err)
-	}
-	join := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
-	viewer := researchHSMTestViewer(join)
-	researchHandleGuestConnected(viewer)
-	researchRecordHSMDecisionBoundary(context.Background(), created.TableID)
-
-	commandResearchHSMRequest(context.Background(), viewer, &CommandData{
-		TableID:                created.TableID,
-		HSMProtocolVersion:     ResearchHSMProtocolVersion,
-		HSMArchiveGenerationID: created.HSMArchiveGenerationID,
-		HSMClientRequestID:     1,
-		HSMTargetBoundary:      0,
-		HSMEvidenceBoundary:    0,
-		HSMPerspectivePlayer:   0,
-	})
-
-	statusResponse := researchJSONRequest(t, router, http.MethodGet, "/research/sessions/"+created.GameID+"/status", nil, "secret")
-	var status struct {
-		Requests        []ResearchHSMSnapshotRequest `json:"hsm_snapshot_requests"`
-		LegalByBoundary map[string][]string          `json:"hsm_legal_actions_by_boundary"`
-	}
-	if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil {
-		t.Fatalf("failed to parse status response: %v", err)
-	}
-	if len(status.Requests) != 1 {
-		t.Fatalf("expected one pending HSM request, got %#v", status.Requests)
-	}
-	if len(status.LegalByBoundary["0"]) == 0 {
-		t.Fatalf("authority legal actions were not retained for Replay Boundary 0: %#v", status.LegalByBoundary)
-	}
-	request := status.Requests[0]
-	if request.Identity != "roster_player_0" || request.PerspectivePlayer != 0 {
-		t.Fatalf("request lost its server-bound identity or controls: %#v", request)
-	}
-
-	publish := researchJSONRequest(t, router, http.MethodPost, "/research/sessions/"+created.GameID+"/hsm-snapshot", ResearchHSMSnapshotPublication{
-		ResearchHSMResponseIdentity: responseIdentityForSnapshotRequest(&request),
-		Snapshot:                    researchValidHSMSnapshotForRequest(request),
-	}, "secret")
-	if publish.Code != http.StatusOK {
-		t.Fatalf("expected snapshot publication 200, got %d: %s", publish.Code, publish.Body.String())
-	}
-	statusResponse = researchJSONRequest(t, router, http.MethodGet, "/research/sessions/"+created.GameID+"/status", nil, "secret")
-	if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil {
-		t.Fatalf("failed to parse final status response: %v", err)
-	}
-	if len(status.Requests) != 0 {
-		t.Fatalf("published request remained pending: %#v", status.Requests)
-	}
-
-	commandResearchHSMRequest(context.Background(), viewer, &CommandData{
-		TableID:                created.TableID,
-		HSMProtocolVersion:     ResearchHSMProtocolVersion,
-		HSMArchiveGenerationID: created.HSMArchiveGenerationID,
-		HSMClientRequestID:     2,
-		HSMTargetBoundary:      0,
-		HSMEvidenceBoundary:    0,
-		HSMPerspectivePlayer:   0,
-	})
-	statusResponse = researchJSONRequest(t, router, http.MethodGet, "/research/sessions/"+created.GameID+"/status", nil, "secret")
-	if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil {
-		t.Fatalf("failed to parse failure-pending status response: %v", err)
-	}
-	if len(status.Requests) != 1 {
-		t.Fatalf("expected one pending request before failure, got %#v", status.Requests)
-	}
-	failedRequest := status.Requests[0]
-	typedFailure := researchValidHSMFailureForRequest(failedRequest)
-	failure := researchJSONRequest(t, router, http.MethodPost, "/research/sessions/"+created.GameID+"/hsm-snapshot-failure", ResearchHSMSnapshotFailurePublication{
-		ResearchHSMResponseIdentity: responseIdentityForSnapshotRequest(&failedRequest),
-		Error:                       "HSM diagnostics unavailable.",
-		Failure:                     typedFailure,
-	}, "secret")
-	if failure.Code != http.StatusOK {
-		t.Fatalf("expected snapshot failure publication 200, got %d: %s", failure.Code, failure.Body.String())
-	}
-	statusResponse = researchJSONRequest(t, router, http.MethodGet, "/research/sessions/"+created.GameID+"/status", nil, "secret")
-	if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil {
-		t.Fatalf("failed to parse failure-final status response: %v", err)
-	}
-	if len(status.Requests) != 0 {
-		t.Fatalf("failed request remained pending: %#v", status.Requests)
-	}
-}
-
-func TestHSMSnapshotPublicationRetriesFailedWebsocketDeliveryExactlyOnce(t *testing.T) {
-	researchTestInit(t)
-	commandInit()
-	router := researchTestRouter()
-	payload := researchSingleGamePayload()
-	payload.RosterPlayers[0].HSMDebugCapability = ResearchHSMCapabilitySwitchable
-	response := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/single-game",
-		payload,
-		"secret",
-	)
-	var created CreatedResearchSingleGame
-	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
-		t.Fatalf("failed to parse creation response: %v", err)
-	}
-	join := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
-	viewer := researchHSMTestViewer(join)
-	outbound := &researchRecordingOutbound{ready: true}
-	viewer.outbound = outbound
-	researchHandleGuestConnected(viewer)
-	researchRecordHSMDecisionBoundary(context.Background(), created.TableID)
-	commandResearchHSMRequest(context.Background(), viewer, &CommandData{
-		TableID:                created.TableID,
-		HSMProtocolVersion:     ResearchHSMProtocolVersion,
-		HSMArchiveGenerationID: created.HSMArchiveGenerationID,
-		HSMClientRequestID:     1,
-		HSMTargetBoundary:      0,
-		HSMEvidenceBoundary:    0,
-		HSMPerspectivePlayer:   0,
-	})
-	request := onlyPendingHSMSnapshotRequest(t, created.GameID)
-	publication := ResearchHSMSnapshotPublication{
-		ResearchHSMResponseIdentity: responseIdentityForSnapshotRequest(&request),
-		Snapshot:                    researchValidHSMSnapshotForRequest(request),
-	}
-	outbound.messages = nil
-	outbound.writeErr = errors.New("closed websocket")
-
-	failed := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/sessions/"+created.GameID+"/hsm-snapshot",
-		publication,
-		"secret",
-	)
-	if failed.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected failed websocket delivery to return 503, got %d: %s", failed.Code, failed.Body.String())
-	}
-	if current := onlyPendingHSMSnapshotRequest(t, created.GameID); current.ServerRequestID != request.ServerRequestID {
-		t.Fatalf("failed delivery consumed or replaced pending response: %#v", current)
-	}
-
-	outbound.writeErr = nil
-	delivered := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/sessions/"+created.GameID+"/hsm-snapshot",
-		publication,
-		"secret",
-	)
-	if delivered.Code != http.StatusOK {
-		t.Fatalf("expected retry delivery 200, got %d: %s", delivered.Code, delivered.Body.String())
-	}
-	if len(outbound.messages) != 1 || !strings.HasPrefix(outbound.messages[0], "hsmSnapshot ") {
-		t.Fatalf("expected one captured snapshot websocket envelope, got %#v", outbound.messages)
-	}
-
-	duplicate := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/sessions/"+created.GameID+"/hsm-snapshot",
-		publication,
-		"secret",
-	)
-	if duplicate.Code != http.StatusConflict {
-		t.Fatalf("expected delivered response retry conflict, got %d: %s", duplicate.Code, duplicate.Body.String())
-	}
-	if len(outbound.messages) != 1 {
-		t.Fatalf("delivered response was emitted more than once: %#v", outbound.messages)
-	}
-}
-
-func TestHSMSnapshotUnavailableIsCorrelatedRetryableAndDoesNotMutateGameAuthority(t *testing.T) {
-	researchTestInit(t)
-	commandInit()
-	router := researchTestRouter()
-	payload := researchSingleGamePayload()
-	payload.RosterPlayers[0].HSMDebugCapability = ResearchHSMCapabilitySwitchable
-	response := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/single-game",
-		payload,
-		"secret",
-	)
-	var created CreatedResearchSingleGame
-	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
-		t.Fatalf("failed to parse creation response: %v", err)
-	}
-	join := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
-	viewer := researchHSMTestViewer(join)
-	outbound := &researchRecordingOutbound{ready: true}
-	viewer.outbound = outbound
-	researchHandleGuestConnected(viewer)
-	researchRecordHSMDecisionBoundary(context.Background(), created.TableID)
-	commandResearchHSMRequest(context.Background(), viewer, &CommandData{
-		TableID:                created.TableID,
-		HSMProtocolVersion:     ResearchHSMProtocolVersion,
-		HSMArchiveGenerationID: created.HSMArchiveGenerationID,
-		HSMClientRequestID:     1,
-		HSMTargetBoundary:      0,
-		HSMEvidenceBoundary:    0,
-		HSMPerspectivePlayer:   0,
-	})
-	request := onlyPendingHSMSnapshotRequest(t, created.GameID)
-	publication := ResearchHSMSnapshotUnavailablePublication{
-		ResearchHSMResponseIdentity: responseIdentityForSnapshotRequest(&request),
-		ReasonCode:                  researchHSMSnapshotUnavailableReasonCode,
-		Error:                       researchHSMSnapshotUnavailableError,
-	}
-	table, ok := tables.Get(created.TableID, true)
-	if !ok {
-		t.Fatalf("created table %d does not exist", created.TableID)
-	}
-	table.Lock(nil)
-	gameBefore := table.Game
-	turnBefore := table.Game.Turn
-	actorBefore := table.Game.ActivePlayerIndex
-	actionCountBefore := len(table.Game.Actions2)
-	table.Unlock(nil)
-
-	for _, unsupported := range []ResearchHSMSnapshotUnavailablePublication{
-		func() ResearchHSMSnapshotUnavailablePublication {
-			invalid := publication
-			invalid.ReasonCode = "internal_error"
-			return invalid
-		}(),
-		func() ResearchHSMSnapshotUnavailablePublication {
-			invalid := publication
-			invalid.Error = "Internal diagnostics exception."
-			return invalid
-		}(),
-	} {
-		rejected := researchJSONRequest(
-			t,
-			router,
-			http.MethodPost,
-			"/research/sessions/"+created.GameID+"/hsm-snapshot-unavailable",
-			unsupported,
-			"secret",
-		)
-		if rejected.Code != http.StatusUnprocessableEntity {
-			t.Fatalf("expected unsupported unavailable message 422, got %d: %s", rejected.Code, rejected.Body.String())
-		}
-	}
-	if current := onlyPendingHSMSnapshotRequest(t, created.GameID); current.ServerRequestID != request.ServerRequestID {
-		t.Fatalf("invalid unavailable response consumed pending request: %#v", current)
-	}
-
-	outbound.messages = nil
-	outbound.writeErr = errors.New("closed websocket")
-	failed := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/sessions/"+created.GameID+"/hsm-snapshot-unavailable",
-		publication,
-		"secret",
-	)
-	if failed.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected failed websocket delivery 503, got %d: %s", failed.Code, failed.Body.String())
-	}
-	if current := onlyPendingHSMSnapshotRequest(t, created.GameID); current.ServerRequestID != request.ServerRequestID {
-		t.Fatalf("failed unavailable delivery consumed pending request: %#v", current)
-	}
-
-	outbound.writeErr = nil
-	delivered := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/sessions/"+created.GameID+"/hsm-snapshot-unavailable",
-		publication,
-		"secret",
-	)
-	if delivered.Code != http.StatusOK {
-		t.Fatalf("expected retry delivery 200, got %d: %s", delivered.Code, delivered.Body.String())
-	}
-	if len(outbound.messages) != 1 || !strings.HasPrefix(outbound.messages[0], "hsmSnapshotUnavailable ") {
-		t.Fatalf("expected one unavailable websocket envelope, got %#v", outbound.messages)
-	}
-	var message map[string]interface{}
-	if err := json.Unmarshal(
-		[]byte(strings.TrimPrefix(outbound.messages[0], "hsmSnapshotUnavailable ")),
-		&message,
-	); err != nil {
-		t.Fatalf("failed to decode unavailable websocket message: %v", err)
-	}
-	if message["reasonCode"] != researchHSMSnapshotUnavailableReasonCode ||
-		message["error"] != researchHSMSnapshotUnavailableError ||
-		message["serverRequestID"] != float64(request.ServerRequestID) {
-		t.Fatalf("unavailable websocket message lost its fixed reason or identity: %#v", message)
-	}
-	session := researchSessions[created.GameID]
-	session.HSMMutex.Lock()
-	pendingAfterDelivery := len(session.PendingHSMSnapshotRequests)
-	session.HSMMutex.Unlock()
-	if pendingAfterDelivery != 0 {
-		t.Fatal("successfully delivered unavailable response remained pending")
-	}
-
-	table.Lock(nil)
-	defer table.Unlock(nil)
-	if table.Game != gameBefore ||
-		table.Game.Turn != turnBefore ||
-		table.Game.ActivePlayerIndex != actorBefore ||
-		len(table.Game.Actions2) != actionCountBefore {
-		t.Fatal("diagnostics-unavailable publication mutated Hanabi game authority")
-	}
-}
-
-func TestHSMSnapshotGoldenFixtureMatchesTheGoTransportContract(t *testing.T) {
-	fixturePath := path.Join(
-		"..",
-		"..",
-		"testdata",
-		"research-hsm",
-		"transport-v1.json",
-	)
-	fixture, err := os.Open(fixturePath)
-	if err != nil {
-		t.Fatalf("failed to open shared HSM snapshot fixture: %v", err)
-	}
-	defer fixture.Close()
-
-	var golden researchHSMTransportGolden
-	decoder := json.NewDecoder(fixture)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&golden); err != nil {
-		t.Fatalf("shared HSM transport does not match Go contract: %v", err)
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		t.Fatalf("shared HSM transport contains trailing JSON: %v", err)
-	}
-	if golden.ProtocolVersion != ResearchHSMProtocolVersion {
-		t.Fatalf("unexpected shared HSM protocol version: %d", golden.ProtocolVersion)
-	}
-
-	snapshot := golden.SnapshotMessage.Snapshot
-	if len(snapshot.raw) == 0 {
-		t.Fatal("Go did not retain the Python-owned snapshot payload")
-	}
-	if snapshot.SemanticProgramID == "" || len(snapshot.Diagnoses) != 1 {
-		t.Fatalf("canonical semantic identity or diagnosis was lost: %#v", snapshot)
-	}
-	if !strings.HasPrefix(snapshot.Diagnoses[0].Label, "hsm-diagnosis:") {
-		t.Fatalf("unexpected diagnosis labels: %#v", snapshot.Diagnoses)
-	}
-	firstClassification := snapshot.Diagnoses[0].Classifications[0]
-	if !firstClassification.Follow || firstClassification.Violation {
-		t.Fatalf("unexpected first diagnosis action flags: %#v", firstClassification)
-	}
-	messageIdentity := golden.SnapshotMessage.researchHSMResponseWire
-	if golden.SnapshotPending != messageIdentity ||
-		golden.SnapshotFailure.researchHSMResponseWire != messageIdentity ||
-		messageIdentity.ActorPlayer != 0 {
-		t.Fatal("golden pending, success, failure, or actor identities drifted")
-	}
-	snapshotJSON, err := json.Marshal(snapshot)
-	if err != nil {
-		t.Fatalf("failed to forward the canonical snapshot: %v", err)
-	}
-	if bytes.Contains(snapshotJSON, []byte(`"world_ids"`)) ||
-		!bytes.Contains(snapshotJSON, []byte(`"clause_ids"`)) {
-		t.Fatalf("snapshot did not preserve the privacy-safe guard: %s", snapshotJSON)
-	}
-	failureJSON, err := json.Marshal(golden.SnapshotFailure.Failure)
-	if err != nil {
-		t.Fatalf("failed to forward the canonical failure: %v", err)
-	}
-	if !bytes.Contains(failureJSON, []byte(`"coordinate_kind":["stable_card"]`)) ||
-		bytes.Contains(failureJSON, []byte(`"valid"`)) {
-		t.Fatalf("failure did not preserve the trimmed canonical core: %s", failureJSON)
-	}
-	if err := golden.PhysicalTruthMessage.Overlay.validate(); err != nil {
-		t.Fatalf("golden Physical Truth is not publishable: %v", err)
-	}
-}
-
-func TestActionTimeClassificationRemainsAnEqualBoundaryFactDuringHindsight(t *testing.T) {
-	request := &ResearchHSMSnapshotRequest{
-		ArchiveGenerationID:      7,
-		TargetBoundary:           3,
-		EvidenceBoundary:         8,
-		PerspectivePlayer:        1,
-		SemanticProfileID:        11,
-		AuthorityLegalProjection: newResearchHSMLegalProjection(nil),
-	}
-	snapshot := researchValidHSMSnapshotForRequest(*request)
-	snapshot.ActionTimeClassification = &ResearchHSMActionTimeClassification{
-		GenerationID:      7,
-		TargetBoundary:    3,
-		EvidenceBoundary:  3,
-		PerspectivePlayer: 1,
-		SemanticProfileID: 11,
-		SelectedActionID:  3,
-		RuleFollow:        []bool{},
-		RuleViolation:     []bool{},
-	}
-
-	if err := snapshot.validateForRequest(request); err != nil {
-		t.Fatalf("equal-boundary action-time fact was rejected during hindsight: %v", err)
-	}
-
-	snapshot.ActionTimeClassification.EvidenceBoundary = request.EvidenceBoundary
-	if err := snapshot.validateForRequest(request); err == nil {
-		t.Fatal("action-time record accepted hindsight evidence instead of its target boundary")
-	}
-}
-
-func TestHSMSnapshotRequestBindsSemanticProfileAndAuthorityLegalProjection(t *testing.T) {
-	researchTestInit(t)
-	commandInit()
-	router := researchTestRouter()
-	payload := researchSingleGamePayload()
-	payload.RosterPlayers[0].HSMDebugCapability = ResearchHSMCapabilitySwitchable
-	response := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/single-game",
-		payload,
-		"secret",
-	)
-	var created CreatedResearchSingleGame
-	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
-		t.Fatalf("failed to parse creation response: %v", err)
-	}
-	join := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
-	viewer := researchHSMTestViewer(join)
-	researchHandleGuestConnected(viewer)
-	researchRecordHSMDecisionBoundary(context.Background(), created.TableID)
-
-	commandResearchHSMRequest(context.Background(), viewer, &CommandData{
-		TableID:                created.TableID,
-		HSMProtocolVersion:     ResearchHSMProtocolVersion,
-		HSMArchiveGenerationID: created.HSMArchiveGenerationID,
-		HSMClientRequestID:     1,
-		HSMTargetBoundary:      0,
-		HSMEvidenceBoundary:    0,
-		HSMPerspectivePlayer:   0,
-	})
-	request := onlyPendingHSMSnapshotRequest(t, created.GameID)
-	if request.SemanticProfileID != payload.HSMSemanticProfileID {
-		t.Fatalf("pending request lost its semantic profile: %#v", request)
-	}
-	if err := request.AuthorityLegalProjection.validate(); err != nil {
-		t.Fatalf("pending request legal projection is not canonical: %v", err)
-	}
-	if request.AuthorityLegalProjection.Digest == "" {
-		t.Fatal("pending request did not bind a legal-projection digest")
-	}
-
-	snapshot := researchValidHSMSnapshotForRequest(request)
-	publication := ResearchHSMSnapshotPublication{
-		ResearchHSMResponseIdentity: responseIdentityForSnapshotRequest(&request),
-		Snapshot:                    snapshot,
-	}
-
-	wrongProfile := publication
-	wrongProfile.SemanticProfileID++
-	rejected := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/sessions/"+created.GameID+"/hsm-snapshot",
-		wrongProfile,
-		"secret",
-	)
-	if rejected.Code != http.StatusConflict {
-		t.Fatalf("expected mismatched profile conflict, got %d: %s", rejected.Code, rejected.Body.String())
-	}
-
-	wrongDigest := publication
-	wrongDigest.AuthorityLegalProjectionDigest = "sha256:wrong"
-	rejected = researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/sessions/"+created.GameID+"/hsm-snapshot",
-		wrongDigest,
-		"secret",
-	)
-	if rejected.Code != http.StatusConflict {
-		t.Fatalf("expected mismatched legal digest conflict, got %d: %s", rejected.Code, rejected.Body.String())
-	}
-
-	wrongProjection := publication
-	wrongProjection.Snapshot.AuthorityLegalActionProjection =
-		append([]bool(nil), publication.Snapshot.AuthorityLegalActionProjection...)
-	wrongProjection.Snapshot.AuthorityLegalActionProjection[0] =
-		!wrongProjection.Snapshot.AuthorityLegalActionProjection[0]
-	rejected = researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/sessions/"+created.GameID+"/hsm-snapshot",
-		wrongProjection,
-		"secret",
-	)
-	if rejected.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("expected mismatched legal projection 422, got %d: %s", rejected.Code, rejected.Body.String())
-	}
-
-	accepted := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/sessions/"+created.GameID+"/hsm-snapshot",
-		publication,
-		"secret",
-	)
-	if accepted.Code != http.StatusOK {
-		t.Fatalf("expected exactly bound snapshot 200, got %d: %s", accepted.Code, accepted.Body.String())
-	}
-}
-
-func TestHSMSnapshotRequestPreservesActorLegalProjectionForSwitchedObserver(t *testing.T) {
-	researchTestInit(t)
-	commandInit()
-	router := researchTestRouter()
-	payload := researchSingleGamePayload()
-	payload.RosterPlayers[0].HSMDebugCapability = ResearchHSMCapabilitySwitchable
-	response := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/single-game",
-		payload,
-		"secret",
-	)
-	var created CreatedResearchSingleGame
-	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
-		t.Fatalf("failed to parse creation response: %v", err)
-	}
-	join := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
-	viewer := researchHSMTestViewer(join)
-	researchHandleGuestConnected(viewer)
-	researchRecordHSMDecisionBoundary(context.Background(), created.TableID)
-
-	session := researchSessions[created.GameID]
-	session.HSMMutex.Lock()
-	expectedProjection := session.HSMLegalProjectionsByBoundary[0]
-	session.HSMMutex.Unlock()
-
-	commandResearchHSMRequest(context.Background(), viewer, &CommandData{
-		TableID:                created.TableID,
-		HSMProtocolVersion:     ResearchHSMProtocolVersion,
-		HSMArchiveGenerationID: created.HSMArchiveGenerationID,
-		HSMClientRequestID:     1,
-		HSMTargetBoundary:      0,
-		HSMEvidenceBoundary:    0,
-		HSMPerspectivePlayer:   1,
-	})
-
-	request := onlyPendingHSMSnapshotRequest(t, created.GameID)
-	if request.ActorPlayer == request.PerspectivePlayer {
-		t.Fatalf("test requires a switched non-actor perspective: %#v", request)
-	}
-	if request.AuthorityLegalProjection.Digest != expectedProjection.Digest {
-		t.Fatalf(
-			"switched observer replaced the actor's authority legal projection: got %s, want %s",
-			request.AuthorityLegalProjection.Digest,
-			expectedProjection.Digest,
-		)
-	}
-}
-
-func TestHSMPublicationRejectsIncompleteNestedSuccessAndFailurePayloads(t *testing.T) {
-	tests := []struct {
-		name        string
-		publication func(ResearchHSMSnapshotRequest) interface{}
-		pathSuffix  string
-	}{
-		{
-			name: "success missing required projection collection",
-			publication: func(request ResearchHSMSnapshotRequest) interface{} {
-				snapshot := researchValidHSMSnapshotForRequest(request)
-				snapshot.Diagnoses[0].PlayConnections = nil
-				return ResearchHSMSnapshotPublication{
-					ResearchHSMResponseIdentity: responseIdentityForSnapshotRequest(
-						&request,
-					),
-					Snapshot: snapshot,
-				}
-			},
-			pathSuffix: "/hsm-snapshot",
-		},
-		{
-			name: "failure missing complete typed provenance",
-			publication: func(request ResearchHSMSnapshotRequest) interface{} {
-				failure := researchValidHSMFailureForRequest(request)
-				failure.SemanticProgramID = ""
-				return ResearchHSMSnapshotFailurePublication{
-					ResearchHSMResponseIdentity: responseIdentityForSnapshotRequest(
-						&request,
-					),
-					Error:   "HSM diagnostics unavailable.",
-					Failure: failure,
-				}
-			},
-			pathSuffix: "/hsm-snapshot-failure",
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			researchTestInit(t)
-			commandInit()
-			router := researchTestRouter()
-			payload := researchSingleGamePayload()
-			payload.RosterPlayers[0].HSMDebugCapability =
-				ResearchHSMCapabilitySwitchable
-			response := researchJSONRequest(
-				t,
-				router,
-				http.MethodPost,
-				"/research/single-game",
-				payload,
-				"secret",
-			)
-			var created CreatedResearchSingleGame
-			if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
-				t.Fatalf("failed to parse creation response: %v", err)
-			}
-			join := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
-			viewer := researchHSMTestViewer(join)
-			researchHandleGuestConnected(viewer)
-			commandResearchHSMRequest(context.Background(), viewer, &CommandData{
-				TableID:                created.TableID,
-				HSMProtocolVersion:     ResearchHSMProtocolVersion,
-				HSMArchiveGenerationID: created.HSMArchiveGenerationID,
-				HSMClientRequestID:     1,
-				HSMTargetBoundary:      0,
-				HSMEvidenceBoundary:    0,
-				HSMPerspectivePlayer:   0,
-			})
-			request := onlyPendingHSMSnapshotRequest(t, created.GameID)
-			rejected := researchJSONRequest(
-				t,
-				router,
-				http.MethodPost,
-				"/research/sessions/"+created.GameID+test.pathSuffix,
-				test.publication(request),
-				"secret",
-			)
-			if rejected.Code != http.StatusUnprocessableEntity {
-				t.Fatalf(
-					"expected incomplete payload 422, got %d: %s",
-					rejected.Code,
-					rejected.Body.String(),
-				)
-			}
-			if pending := onlyPendingHSMSnapshotRequest(t, created.GameID); pending.ServerRequestID != request.ServerRequestID {
-				t.Fatalf("incomplete payload consumed pending request: %#v", pending)
-			}
-		})
-	}
-}
-
-func TestPhysicalTruthPublicationRejectsDuplicateOrInvalidCards(t *testing.T) {
-	researchTestInit(t)
-	commandInit()
-	router := researchTestRouter()
-	payload := researchSingleGamePayload()
-	payload.RosterPlayers[0].HSMDebugCapability =
-		ResearchHSMCapabilityOwnPerspective
-	payload.RosterPlayers[0].HSMPhysicalTruthGrant = true
-	response := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/single-game",
-		payload,
-		"secret",
-	)
-	var created CreatedResearchSingleGame
-	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
-		t.Fatalf("failed to parse creation response: %v", err)
-	}
-	join := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
-	viewer := researchHSMTestViewer(join)
-	researchHandleGuestConnected(viewer)
-	commandResearchHSMPhysicalTruthRequest(context.Background(), viewer, &CommandData{
-		TableID:                created.TableID,
-		HSMProtocolVersion:     ResearchHSMProtocolVersion,
-		HSMArchiveGenerationID: created.HSMArchiveGenerationID,
-		HSMClientRequestID:     1,
-		HSMTargetBoundary:      0,
-		HSMPerspectivePlayer:   join.SeatIndex,
-	})
-	session := researchSessions[created.GameID]
-	session.HSMMutex.Lock()
-	var pending *ResearchHSMPhysicalTruthRequest
-	for _, request := range session.PendingHSMPhysicalTruthRequests {
-		pending = request
-	}
-	session.HSMMutex.Unlock()
-	if pending == nil {
-		t.Fatal("expected one pending Physical Truth request")
-	}
-	publication := ResearchHSMPhysicalTruthPublication{
-		ResearchHSMPhysicalTruthIdentity: physicalTruthIdentityForRequest(pending),
-		Overlay: ResearchHSMPhysicalTruthOverlay{
-			Cards: []ResearchHSMPhysicalTruthCard{
-				{StableCardID: 12, Identity: 4},
-				{StableCardID: 12, Identity: -1},
-			},
-		},
-	}
-	rejected := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/sessions/"+created.GameID+"/hsm-physical-truth",
-		publication,
-		"secret",
-	)
-	if rejected.Code != http.StatusUnprocessableEntity {
-		t.Fatalf(
-			"expected invalid Physical Truth 422, got %d: %s",
-			rejected.Code,
-			rejected.Body.String(),
-		)
-	}
-	session.HSMMutex.Lock()
-	defer session.HSMMutex.Unlock()
-	if len(session.PendingHSMPhysicalTruthRequests) != 1 {
-		t.Fatal("invalid Physical Truth consumed its pending request")
-	}
-}
-
-func TestHSMSnapshotPublicationRejectsObsoleteFieldsAndEmptyDiagnosisSet(t *testing.T) {
-	researchTestInit(t)
-	commandInit()
-	router := researchTestRouter()
-	payload := researchSingleGamePayload()
-	payload.RosterPlayers[0].HSMDebugCapability = "switchable"
-	response := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/single-game",
-		payload,
-		"secret",
-	)
-	var created CreatedResearchSingleGame
-	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
-		t.Fatalf("failed to parse creation response: %v", err)
-	}
-	join := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
-	viewer := researchHSMTestViewer(join)
-	researchHandleGuestConnected(viewer)
-	researchRecordHSMDecisionBoundary(context.Background(), created.TableID)
-	commandResearchHSMRequest(context.Background(), viewer, &CommandData{
-		TableID:                created.TableID,
-		HSMProtocolVersion:     ResearchHSMProtocolVersion,
-		HSMArchiveGenerationID: created.HSMArchiveGenerationID,
-		HSMClientRequestID:     1,
-		HSMTargetBoundary:      0,
-		HSMEvidenceBoundary:    0,
-		HSMPerspectivePlayer:   0,
-	})
-	request := onlyPendingHSMSnapshotRequest(t, created.GameID)
-	table, ok := tables.Get(created.TableID, true)
-	if !ok {
-		t.Fatalf("created table %d is missing", created.TableID)
-	}
-	table.Lock(nil)
-	gameBefore := table.Game
-	actionsBefore := len(table.Game.Actions2)
-	actorBefore := table.Game.ActivePlayerIndex
-	table.Unlock(nil)
-
-	fixtureBytes, err := os.ReadFile(path.Join(
-		"..",
-		"..",
-		"testdata",
-		"research-hsm",
-		"transport-v1.json",
-	))
-	if err != nil {
-		t.Fatalf("failed to read shared snapshot fixture: %v", err)
-	}
-	var golden struct {
-		SnapshotMessage struct {
-			Snapshot map[string]interface{} `json:"snapshot"`
-		} `json:"snapshotMessage"`
-	}
-	if err := json.Unmarshal(fixtureBytes, &golden); err != nil {
-		t.Fatalf("failed to parse shared snapshot fixture: %v", err)
-	}
-	snapshot := golden.SnapshotMessage.Snapshot
-	snapshot["generation_id"] = request.ArchiveGenerationID
-	snapshot["target_boundary"] = request.TargetBoundary
-	snapshot["evidence_boundary"] = request.EvidenceBoundary
-	snapshot["perspective_player"] = request.PerspectivePlayer
-	snapshot["semantic_profile_id"] = request.SemanticProfileID
-	snapshot["authority_legal_action_projection"] =
-		request.AuthorityLegalProjection.legality()
-	snapshot["physical_truth"] = map[string]interface{}{"cards": []interface{}{}}
-	publication := map[string]interface{}{
-		"protocol_version":                  ResearchHSMProtocolVersion,
-		"server_request_id":                 request.ServerRequestID,
-		"client_request_id":                 request.ClientRequestID,
-		"archive_generation_id":             request.ArchiveGenerationID,
-		"target_boundary":                   request.TargetBoundary,
-		"evidence_boundary":                 request.EvidenceBoundary,
-		"perspective_player":                request.PerspectivePlayer,
-		"semantic_profile_id":               request.SemanticProfileID,
-		"authority_legal_projection_digest": request.AuthorityLegalProjection.Digest,
-		"snapshot":                          snapshot,
-	}
-
-	rejected := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/sessions/"+created.GameID+"/hsm-snapshot",
-		publication,
-		"secret",
-	)
-	if rejected.Code != http.StatusBadRequest {
-		t.Fatalf(
-			"expected obsolete embedded truth to be rejected with 400, got %d: %s",
-			rejected.Code,
-			rejected.Body.String(),
-		)
-	}
-	pending := onlyPendingHSMSnapshotRequest(t, created.GameID)
-	if pending.ServerRequestID != request.ServerRequestID {
-		t.Fatalf("rejected publication consumed pending request: %#v", pending)
-	}
-
-	delete(snapshot, "physical_truth")
-	snapshot["diagnoses"] = []interface{}{}
-	emptyDiagnoses := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/sessions/"+created.GameID+"/hsm-snapshot",
-		publication,
-		"secret",
-	)
-	if emptyDiagnoses.Code != http.StatusUnprocessableEntity {
-		t.Fatalf(
-			"expected empty successful diagnosis set to be rejected with 422, got %d: %s",
-			emptyDiagnoses.Code,
-			emptyDiagnoses.Body.String(),
-		)
-	}
-	pending = onlyPendingHSMSnapshotRequest(t, created.GameID)
-	if pending.ServerRequestID != request.ServerRequestID {
-		t.Fatalf("invalid empty snapshot consumed pending request: %#v", pending)
-	}
-	table.Lock(nil)
-	defer table.Unlock(nil)
-	if table.Game != gameBefore ||
-		len(table.Game.Actions2) != actionsBefore ||
-		table.Game.ActivePlayerIndex != actorBefore {
-		t.Fatal("invalid diagnostics publication mutated live game authority")
-	}
-}
-
-func TestResearchHSMPublicationRequiresOneJSONDocumentWithJSONContentType(t *testing.T) {
-	researchTestInit(t)
-	router := researchTestRouter()
-	for _, test := range []struct {
-		name        string
-		contentType string
-		body        string
-	}{
-		{
-			name:        "trailing JSON document",
-			contentType: "application/json",
-			body:        "{} {}",
-		},
-		{
-			name:        "unknown publication field",
-			contentType: "application/json",
-			body:        `{"unexpected":true}`,
-		},
-		{
-			name:        "non-JSON content type",
-			contentType: "text/plain",
-			body:        "{}",
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			request := httptest.NewRequest(
-				http.MethodPost,
-				"/research/sessions/run/hsm-snapshot",
-				strings.NewReader(test.body),
-			)
-			request.Header.Set("Authorization", "Bearer secret")
-			request.Header.Set("Content-Type", test.contentType)
-			response := httptest.NewRecorder()
-			router.ServeHTTP(response, request)
-			if response.Code != http.StatusBadRequest {
-				t.Fatalf(
-					"expected strict decoder 400, got %d: %s",
-					response.Code,
-					response.Body.String(),
-				)
-			}
-		})
-	}
-}
-
-func TestHSMRequestCarriesServerGenerationAndClientCorrelation(t *testing.T) {
-	researchTestInit(t)
-	commandInit()
-	router := researchTestRouter()
-	payload := researchSingleGamePayload()
-	payload.RosterPlayers[0].HSMDebugCapability = "switchable"
-	response := researchJSONRequest(t, router, http.MethodPost, "/research/single-game", payload, "secret")
-	if response.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", response.Code, response.Body.String())
-	}
-	var created CreatedResearchSingleGame
-	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
-		t.Fatalf("failed to parse creation response: %v", err)
-	}
-	if created.HSMArchiveGenerationID != 1 {
-		t.Fatalf("expected first Archive Generation ID 1, got %d", created.HSMArchiveGenerationID)
-	}
-	join := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
-	viewer := researchHSMTestViewer(join)
-	researchHandleGuestConnected(viewer)
-	researchRecordHSMDecisionBoundary(context.Background(), created.TableID)
-
-	commandResearchHSMRequest(context.Background(), viewer, &CommandData{
-		TableID:                created.TableID,
-		HSMProtocolVersion:     ResearchHSMProtocolVersion,
-		HSMArchiveGenerationID: created.HSMArchiveGenerationID,
-		HSMClientRequestID:     41,
-		HSMTargetBoundary:      0,
-		HSMEvidenceBoundary:    0,
-		HSMPerspectivePlayer:   0,
-	})
-
-	statusResponse := researchJSONRequest(t, router, http.MethodGet, "/research/sessions/"+created.GameID+"/status", nil, "secret")
-	var status struct {
-		ArchiveGenerationID uint32                       `json:"hsm_archive_generation_id"`
-		Requests            []ResearchHSMSnapshotRequest `json:"hsm_snapshot_requests"`
-	}
-	if err := json.Unmarshal(statusResponse.Body.Bytes(), &status); err != nil {
-		t.Fatalf("failed to parse session status: %v", err)
-	}
-	if status.ArchiveGenerationID != created.HSMArchiveGenerationID {
-		t.Fatalf("status generation mismatch: %#v", status)
-	}
-	if len(status.Requests) != 1 {
-		t.Fatalf("expected one request, got %#v", status.Requests)
-	}
-	request := status.Requests[0]
-	if request.ServerRequestID <= 0 ||
-		request.ClientRequestID != 41 ||
-		request.ArchiveGenerationID != created.HSMArchiveGenerationID ||
-		request.TargetBoundary != 0 ||
-		request.EvidenceBoundary != 0 ||
-		request.PerspectivePlayer != 0 {
-		t.Fatalf("request correlation was not preserved: %#v", request)
-	}
-}
-
-func TestAuthorizedHSMRequestGetsCorrelatedProtocolAndCoordinateRejections(t *testing.T) {
-	researchTestInit(t)
-	commandInit()
-	router := researchTestRouter()
-	payload := researchSingleGamePayload()
-	payload.RosterPlayers[0].HSMDebugCapability =
-		ResearchHSMCapabilitySwitchable
-	response := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/single-game",
-		payload,
-		"secret",
-	)
-	var created CreatedResearchSingleGame
-	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
-		t.Fatalf("failed to parse creation response: %v", err)
-	}
-	join := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
-	viewer := researchHSMTestViewer(join)
-	outbound := viewer.outbound.(*researchRecordingOutbound)
-	researchHandleGuestConnected(viewer)
-
-	tests := []struct {
-		name       string
-		request    CommandData
-		reasonCode string
-	}{
-		{
-			name: "unsupported protocol",
-			request: CommandData{
-				HSMProtocolVersion:     ResearchHSMProtocolVersion + 1,
-				HSMArchiveGenerationID: created.HSMArchiveGenerationID,
-				HSMClientRequestID:     71,
-				HSMTargetBoundary:      0,
-				HSMEvidenceBoundary:    0,
-				HSMPerspectivePlayer:   0,
-			},
-			reasonCode: "unsupported_protocol_version",
-		},
-		{
-			name: "stale generation",
-			request: CommandData{
-				HSMProtocolVersion:     ResearchHSMProtocolVersion,
-				HSMArchiveGenerationID: created.HSMArchiveGenerationID + 1,
-				HSMClientRequestID:     72,
-				HSMTargetBoundary:      0,
-				HSMEvidenceBoundary:    0,
-				HSMPerspectivePlayer:   0,
-			},
-			reasonCode: "stale_archive_generation",
-		},
-		{
-			name: "invalid coordinate",
-			request: CommandData{
-				HSMProtocolVersion:     ResearchHSMProtocolVersion,
-				HSMArchiveGenerationID: created.HSMArchiveGenerationID,
-				HSMClientRequestID:     73,
-				HSMTargetBoundary:      1,
-				HSMEvidenceBoundary:    0,
-				HSMPerspectivePlayer:   0,
-			},
-			reasonCode: "invalid_request_coordinate",
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			outbound.messages = nil
-			test.request.TableID = created.TableID
-			commandResearchHSMRequest(
-				context.Background(),
-				viewer,
-				&test.request,
-			)
-			if len(outbound.messages) != 1 ||
-				!strings.HasPrefix(outbound.messages[0], "hsmSnapshotRejected ") {
-				t.Fatalf("expected one correlated rejection, got %#v", outbound.messages)
-			}
-			var rejection ResearchHSMRequestRejection
-			if err := json.Unmarshal(
-				[]byte(strings.TrimPrefix(outbound.messages[0], "hsmSnapshotRejected ")),
-				&rejection,
-			); err != nil {
-				t.Fatalf("failed to parse rejection: %v", err)
-			}
-			if rejection.ProtocolVersion != ResearchHSMProtocolVersion ||
-				rejection.ClientRequestID != test.request.HSMClientRequestID ||
-				rejection.ReasonCode != test.reasonCode {
-				t.Fatalf("rejection lost correlation or reason: %#v", rejection)
-			}
-			session := researchSessions[created.GameID]
-			session.HSMMutex.Lock()
-			pending := len(session.PendingHSMSnapshotRequests)
-			session.HSMMutex.Unlock()
-			if pending != 0 {
-				t.Fatalf("rejected request entered the pending queue: %d", pending)
-			}
-		})
-	}
-}
-
-func TestHSMRequestRollsBackWhenPendingAcknowledgementCannotBeDelivered(t *testing.T) {
-	researchTestInit(t)
-	commandInit()
-	router := researchTestRouter()
-	payload := researchSingleGamePayload()
-	payload.RosterPlayers[0].HSMDebugCapability =
-		ResearchHSMCapabilitySwitchable
-	response := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/single-game",
-		payload,
-		"secret",
-	)
-	var created CreatedResearchSingleGame
-	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
-		t.Fatalf("failed to parse creation response: %v", err)
-	}
-	join := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
-	viewer := researchHSMTestViewer(join)
-	outbound := viewer.outbound.(*researchRecordingOutbound)
-	researchHandleGuestConnected(viewer)
-	outbound.writeErr = errors.New("closed websocket")
-
-	commandResearchHSMRequest(context.Background(), viewer, &CommandData{
-		TableID:                created.TableID,
-		HSMProtocolVersion:     ResearchHSMProtocolVersion,
-		HSMArchiveGenerationID: created.HSMArchiveGenerationID,
-		HSMClientRequestID:     81,
-		HSMTargetBoundary:      0,
-		HSMEvidenceBoundary:    0,
-		HSMPerspectivePlayer:   0,
-	})
-
-	session := researchSessions[created.GameID]
-	session.HSMMutex.Lock()
-	defer session.HSMMutex.Unlock()
-	if len(session.PendingHSMSnapshotRequests) != 0 {
-		t.Fatalf(
-			"undelivered pending acknowledgement left orphaned work: %#v",
-			session.PendingHSMSnapshotRequests,
-		)
-	}
-}
-
-func TestHSMPublicationRejectsSupersededAndMismatchedResponseIdentity(t *testing.T) {
-	researchTestInit(t)
-	commandInit()
-	router := researchTestRouter()
-	payload := researchSingleGamePayload()
-	payload.RosterPlayers[0].HSMDebugCapability = "switchable"
-	response := researchJSONRequest(t, router, http.MethodPost, "/research/single-game", payload, "secret")
-	var created CreatedResearchSingleGame
-	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
-		t.Fatalf("failed to parse creation response: %v", err)
-	}
-	join := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
-	viewer := researchHSMTestViewer(join)
-	researchHandleGuestConnected(viewer)
-	researchRecordHSMDecisionBoundary(context.Background(), created.TableID)
-
-	request := func(clientRequestID int) {
-		commandResearchHSMRequest(context.Background(), viewer, &CommandData{
-			TableID:                created.TableID,
-			HSMProtocolVersion:     ResearchHSMProtocolVersion,
-			HSMArchiveGenerationID: created.HSMArchiveGenerationID,
-			HSMClientRequestID:     clientRequestID,
-			HSMTargetBoundary:      0,
-			HSMEvidenceBoundary:    0,
-			HSMPerspectivePlayer:   0,
-		})
-	}
-	request(51)
-	first := onlyPendingHSMSnapshotRequest(t, created.GameID)
-	viewer = researchHSMTestViewer(join)
-	researchHandleGuestConnected(viewer)
-	request(52)
-	second := onlyPendingHSMSnapshotRequest(t, created.GameID)
-	if first.ServerRequestID == second.ServerRequestID {
-		t.Fatalf("new browser request reused server correlation: %#v", second)
-	}
-
-	stale := researchJSONRequest(t, router, http.MethodPost, "/research/sessions/"+created.GameID+"/hsm-snapshot", ResearchHSMSnapshotPublication{
-		ResearchHSMResponseIdentity: responseIdentityForSnapshotRequest(&first),
-		Snapshot:                    researchValidHSMSnapshotForRequest(first),
-	}, "secret")
-	if stale.Code != http.StatusConflict {
-		t.Fatalf("expected superseded response conflict, got %d: %s", stale.Code, stale.Body.String())
-	}
-
-	mismatched := ResearchHSMSnapshotPublication{
-		ResearchHSMResponseIdentity: responseIdentityForSnapshotRequest(&second),
-		Snapshot:                    researchValidHSMSnapshotForRequest(second),
-	}
-	mismatched.ClientRequestID++
-	conflict := researchJSONRequest(t, router, http.MethodPost, "/research/sessions/"+created.GameID+"/hsm-snapshot", mismatched, "secret")
-	if conflict.Code != http.StatusConflict {
-		t.Fatalf("expected mismatched response conflict, got %d: %s", conflict.Code, conflict.Body.String())
-	}
-	if current := onlyPendingHSMSnapshotRequest(t, created.GameID); current.ServerRequestID != second.ServerRequestID ||
-		current.ClientRequestID != second.ClientRequestID ||
-		current.AuthorityLegalProjection.Digest != second.AuthorityLegalProjection.Digest {
-		t.Fatalf("mismatched publication consumed the pending request: %#v", current)
-	}
-
-	mismatched.ClientRequestID = second.ClientRequestID
-	published := researchJSONRequest(t, router, http.MethodPost, "/research/sessions/"+created.GameID+"/hsm-snapshot", mismatched, "secret")
-	if published.Code != http.StatusOK {
-		t.Fatalf("expected exact publication 200, got %d: %s", published.Code, published.Body.String())
-	}
-}
-
-func onlyPendingHSMSnapshotRequest(t *testing.T, gameID string) ResearchHSMSnapshotRequest {
-	t.Helper()
-	session := researchSessions[gameID]
-	session.HSMMutex.Lock()
-	defer session.HSMMutex.Unlock()
-	if len(session.PendingHSMSnapshotRequests) != 1 {
-		t.Fatalf("expected one pending HSM snapshot request, got %#v", session.PendingHSMSnapshotRequests)
-	}
-	for _, request := range session.PendingHSMSnapshotRequests {
-		return *request
-	}
-	panic("unreachable")
-}
-
-func TestUnauthorizedResearchPlayerHasNoHSMInitializationOrRequests(t *testing.T) {
-	researchTestInit(t)
-	commandInit()
-	router := researchTestRouter()
-	response := researchJSONRequest(t, router, http.MethodPost, "/research/single-game", researchSingleGamePayload(), "secret")
-	var created CreatedResearchSingleGame
-	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
-		t.Fatalf("failed to parse creation response: %v", err)
-	}
-	join := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
-	viewer := researchHSMTestViewer(join)
-	if debug := researchHSMDebugInitForUser(viewer.UserID); debug != nil {
-		t.Fatalf("unauthorized player received HSM initialization: %#v", debug)
-	}
-	commandResearchHSMRequest(context.Background(), viewer, &CommandData{
-		TableID:              created.TableID,
-		HSMTargetBoundary:    0,
-		HSMEvidenceBoundary:  0,
-		HSMPerspectivePlayer: 0,
-	})
-	if requests := researchSessions[created.GameID].PendingHSMSnapshotRequests; len(requests) != 0 {
-		t.Fatalf("unauthorized request entered the diagnostic queue: %#v", requests)
 	}
 }
 
@@ -2046,8 +376,6 @@ func TestSingleGameRestartRequestTransitionsSameTableExactlyOnce(t *testing.T) {
 		"roster_player_0": "seat_0",
 		"roster_player_1": "seat_1",
 	}
-	payload.RosterPlayers[0].HSMDebugCapability =
-		ResearchHSMCapabilitySwitchable
 
 	response := researchJSONRequest(
 		t,
@@ -2066,27 +394,8 @@ func TestSingleGameRestartRequestTransitionsSameTableExactlyOnce(t *testing.T) {
 	}
 	token := path.Base(created.JoinLinks["roster_player_0"])
 	join := researchJoinTokens[token]
-	if join.HSMIdentity != "roster_player_1" {
-		t.Fatalf("forced-seat HSM perspective must use the physical Roster Player, got %#v", join)
-	}
-	controller := researchHSMTestViewer(join)
+	controller := researchTestViewer(join)
 	researchHandleGuestConnected(controller)
-	commandResearchHSMRequest(context.Background(), controller, &CommandData{
-		TableID:                created.TableID,
-		HSMProtocolVersion:     ResearchHSMProtocolVersion,
-		HSMArchiveGenerationID: created.HSMArchiveGenerationID,
-		HSMClientRequestID:     101,
-		HSMTargetBoundary:      0,
-		HSMEvidenceBoundary:    0,
-		HSMPerspectivePlayer:   join.SeatIndex,
-	})
-	oldSnapshotRequest := onlyPendingHSMSnapshotRequest(t, created.GameID)
-	oldPublication := ResearchHSMSnapshotPublication{
-		ResearchHSMResponseIdentity: responseIdentityForSnapshotRequest(
-			&oldSnapshotRequest,
-		),
-		Snapshot: researchValidHSMSnapshotForRequest(oldSnapshotRequest),
-	}
 
 	table, ok := tables.Get(created.TableID, true)
 	if !ok {
@@ -2139,32 +448,6 @@ func TestSingleGameRestartRequestTransitionsSameTableExactlyOnce(t *testing.T) {
 	if status["restart_request"] != nil {
 		t.Fatalf("expected request to be acknowledged, got %#v", status["restart_request"])
 	}
-	if status["hsm_archive_generation_id"] != float64(created.HSMArchiveGenerationID+1) {
-		t.Fatalf("restart did not advance the Archive Generation ID: %#v", status)
-	}
-	outbound := controller.outbound.(*researchRecordingOutbound)
-	outbound.messages = nil
-	stalePublication := researchJSONRequest(
-		t,
-		router,
-		http.MethodPost,
-		"/research/sessions/"+created.GameID+"/hsm-snapshot",
-		oldPublication,
-		"secret",
-	)
-	if stalePublication.Code != http.StatusConflict {
-		t.Fatalf(
-			"expected pre-restart HSM publication conflict, got %d: %s",
-			stalePublication.Code,
-			stalePublication.Body.String(),
-		)
-	}
-	for _, message := range outbound.messages {
-		if strings.HasPrefix(message, "hsmSnapshot ") {
-			t.Fatalf("stale pre-restart HSM snapshot reached the browser: %q", message)
-		}
-	}
-
 	table, ok = tables.Get(created.TableID, true)
 	if !ok {
 		t.Fatalf("original table %d disappeared", created.TableID)
@@ -2183,10 +466,6 @@ func TestSingleGameRestartRequestTransitionsSameTableExactlyOnce(t *testing.T) {
 	if path.Base(created.JoinLinks["roster_player_0"]) != token {
 		t.Fatal("restart changed the controller join link")
 	}
-	if join.HSMIdentity != "roster_player_0" {
-		t.Fatalf("restart did not update the physical HSM identity: %#v", join)
-	}
-
 	replayedResponse := researchJSONRequest(
 		t,
 		router,
@@ -2351,7 +630,7 @@ func TestUnifiedMagicJoinRedirectsToTheSharedRendererUnifiedRoute(t *testing.T) 
 func TestUnifiedManualJoinStartsAllSeatsAndViewsTheCurrentPlayer(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 
 	researchHandleGuestConnected(viewer)
 
@@ -2377,7 +656,7 @@ func TestUnifiedManualJoinStartsAllSeatsAndViewsTheCurrentPlayer(t *testing.T) {
 func TestUnifiedManualInitPresentsTheViewedSeatWithoutAnOrdinaryPlayerDisguise(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	outbound := viewer.outbound.(*researchRecordingOutbound)
 	outbound.messages = nil
@@ -2406,7 +685,7 @@ func TestUnifiedManualInitPresentsTheViewedSeatWithoutAnOrdinaryPlayerDisguise(t
 func TestUnifiedInitExposesSeatlessControllerStateAndCapabilities(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	outbound := viewer.outbound.(*researchRecordingOutbound)
 	outbound.messages = nil
@@ -2454,7 +733,7 @@ func TestUnifiedInitExposesSeatlessControllerStateAndCapabilities(t *testing.T) 
 func TestUnifiedPerspectiveSwitchPreservesGameAndTurnState(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	table, _ := tables.Get(created.TableID, true)
 	table.Lock(nil)
@@ -2490,7 +769,7 @@ func TestUnifiedPerspectiveSwitchPreservesGameAndTurnState(t *testing.T) {
 func TestUnifiedPerspectiveExactStateRequestIsNoOp(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	outbound := viewer.outbound.(*researchRecordingOutbound)
 	outbound.messages = nil
@@ -2517,7 +796,7 @@ func TestUnifiedPerspectiveExactStateRequestIsNoOp(t *testing.T) {
 func TestUnifiedPerspectiveSwitchReturnsAtomicProjectionAtSelectedBoundary(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	table, _ := tables.Get(created.TableID, true)
 	table.Lock(nil)
@@ -2572,7 +851,7 @@ func TestUnifiedPerspectiveSwitchReturnsAtomicProjectionAtSelectedBoundary(t *te
 func TestUnifiedPerspectiveResolverFailureDoesNotCommitControllerState(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	table, _ := tables.Get(created.TableID, true)
 	table.Lock(nil)
@@ -2617,7 +896,7 @@ func TestUnifiedPerspectiveResolverFailureDoesNotCommitControllerState(t *testin
 func TestUnifiedPerspectiveDeliveryFailureDoesNotCommitControllerState(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	outbound := viewer.outbound.(*researchRecordingOutbound)
 	outbound.messages = nil
@@ -2651,7 +930,7 @@ func TestUnifiedPerspectiveDeliveryFailureDoesNotCommitControllerState(t *testin
 func TestUnifiedOffTurnPerspectiveCannotSubmitAnAction(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	commandResearchPerspective(context.Background(), viewer, &CommandData{
 		TableID:                    created.TableID,
@@ -2691,7 +970,7 @@ func TestUnifiedOffTurnPerspectiveCannotSubmitAnAction(t *testing.T) {
 func TestUnifiedActionRequiresCurrentActorBoundaryAndProjectionRevision(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	table, _ := tables.Get(created.TableID, true)
 	table.Lock(nil)
@@ -2741,7 +1020,7 @@ func TestAcceptedUnifiedActionProjectsThenFollowsAfterAnimationDelay(t *testing.
 		scheduledFollow = follow
 	}
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	table, _ := tables.Get(created.TableID, true)
 	table.Lock(nil)
@@ -2817,7 +1096,7 @@ func TestUnifiedHistoryChangeCancelsPendingTurnFollow(t *testing.T) {
 		scheduledFollow = follow
 	}
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	table, _ := tables.Get(created.TableID, true)
 	table.Lock(nil)
@@ -2874,7 +1153,7 @@ func TestUnifiedRestartRequestCancelsPendingTurnFollow(t *testing.T) {
 		scheduledFollow = follow
 	}
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	table, _ := tables.Get(created.TableID, true)
 	table.Lock(nil)
@@ -2921,7 +1200,7 @@ func TestUnifiedSecondActionCharacterDoesNotScheduleTurnFollow(t *testing.T) {
 		scheduledFollows++
 	}
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	table, _ := tables.Get(created.TableID, true)
 	table.Lock(nil)
@@ -2964,7 +1243,7 @@ func TestUnifiedProjectionFollowsAnAuthoritativeServerSideAction(t *testing.T) {
 		scheduledFollow = follow
 	}
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	table, _ := tables.Get(created.TableID, true)
 	table.Lock(nil)
@@ -2998,7 +1277,7 @@ func TestUnifiedProjectionFollowsAnAuthoritativeServerSideAction(t *testing.T) {
 func TestDelayedDuplicateUnifiedActionCannotBecomeTheNextPlayersAction(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	table, _ := tables.Get(created.TableID, true)
 	table.Lock(nil)
@@ -3049,7 +1328,7 @@ func TestUnifiedCurrentPlayerActionAutomaticallyFollowsTheNextTurn(t *testing.T)
 		scheduledFollow = follow
 	}
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	table, _ := tables.Get(created.TableID, true)
 	table.Lock(nil)
@@ -3095,7 +1374,7 @@ func TestUnifiedCurrentPlayerActionAutomaticallyFollowsTheNextTurn(t *testing.T)
 func TestUnifiedPerspectiveSurvivesTheUIReprojectionReconnect(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	table, _ := tables.Get(created.TableID, true)
 	table.Lock(nil)
@@ -3123,7 +1402,7 @@ func TestUnifiedPerspectiveSurvivesTheUIReprojectionReconnect(t *testing.T) {
 		ExpectedProjectionRevision: &expectedRevision,
 	})
 
-	reconnected := researchHSMTestViewer(join)
+	reconnected := researchTestViewer(join)
 	researchHandleGuestConnected(reconnected)
 	outbound := reconnected.outbound.(*researchRecordingOutbound)
 	outbound.messages = nil
@@ -3145,9 +1424,9 @@ func TestUnifiedPerspectiveSurvivesTheUIReprojectionReconnect(t *testing.T) {
 func TestSupersededUnifiedConnectionCannotSwitchPerspective(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	first := researchHSMTestViewer(join)
+	first := researchTestViewer(join)
 	researchHandleGuestConnected(first)
-	second := researchHSMTestViewer(join)
+	second := researchTestViewer(join)
 	researchHandleGuestConnected(second)
 	firstOutbound := first.outbound.(*researchRecordingOutbound)
 	secondOutbound := second.outbound.(*researchRecordingOutbound)
@@ -3180,9 +1459,9 @@ func TestSupersededUnifiedConnectionCannotSwitchPerspective(t *testing.T) {
 func TestSupersededUnifiedConnectionCannotSubmitAnAction(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	first := researchHSMTestViewer(join)
+	first := researchTestViewer(join)
 	researchHandleGuestConnected(first)
-	second := researchHSMTestViewer(join)
+	second := researchTestViewer(join)
 	researchHandleGuestConnected(second)
 	firstOutbound := first.outbound.(*researchRecordingOutbound)
 	firstOutbound.messages = nil
@@ -3216,9 +1495,9 @@ func TestSupersededUnifiedConnectionCannotSubmitAnAction(t *testing.T) {
 func TestSupersededUnifiedConnectionCannotFetchAProjection(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	first := researchHSMTestViewer(join)
+	first := researchTestViewer(join)
 	researchHandleGuestConnected(first)
-	second := researchHSMTestViewer(join)
+	second := researchTestViewer(join)
 	researchHandleGuestConnected(second)
 	outbound := first.outbound.(*researchRecordingOutbound)
 	outbound.messages = nil
@@ -3234,9 +1513,9 @@ func TestSupersededUnifiedConnectionCannotFetchAProjection(t *testing.T) {
 func TestSupersededUnifiedConnectionCannotReinitializeTheController(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	first := researchHSMTestViewer(join)
+	first := researchTestViewer(join)
 	researchHandleGuestConnected(first)
-	second := researchHSMTestViewer(join)
+	second := researchTestViewer(join)
 	researchHandleGuestConnected(second)
 	outbound := first.outbound.(*researchRecordingOutbound)
 	outbound.messages = nil
@@ -3252,9 +1531,9 @@ func TestSupersededUnifiedConnectionCannotReinitializeTheController(t *testing.T
 func TestSupersededUnifiedConnectionCannotPauseTheGame(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	first := researchHSMTestViewer(join)
+	first := researchTestViewer(join)
 	researchHandleGuestConnected(first)
-	second := researchHSMTestViewer(join)
+	second := researchTestViewer(join)
 	researchHandleGuestConnected(second)
 	table, _ := tables.Get(created.TableID, true)
 	table.Lock(nil)
@@ -3282,9 +1561,9 @@ func TestSupersededUnifiedConnectionCannotPauseTheGame(t *testing.T) {
 func TestSupersededUnifiedConnectionCannotTerminateTheGame(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	first := researchHSMTestViewer(join)
+	first := researchTestViewer(join)
 	researchHandleGuestConnected(first)
-	second := researchHSMTestViewer(join)
+	second := researchTestViewer(join)
 	researchHandleGuestConnected(second)
 	outbound := first.outbound.(*researchRecordingOutbound)
 	outbound.messages = nil
@@ -3306,9 +1585,9 @@ func TestSupersededUnifiedConnectionCannotTerminateTheGame(t *testing.T) {
 func TestSupersededUnifiedConnectionCannotRequestRestart(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	first := researchHSMTestViewer(join)
+	first := researchTestViewer(join)
 	researchHandleGuestConnected(first)
-	second := researchHSMTestViewer(join)
+	second := researchTestViewer(join)
 	researchHandleGuestConnected(second)
 	outbound := first.outbound.(*researchRecordingOutbound)
 	outbound.messages = nil
@@ -3333,9 +1612,9 @@ func TestSupersededUnifiedConnectionCannotRequestRestart(t *testing.T) {
 func TestSupersededUnifiedConnectionCannotMarkManualSeatsLoaded(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	first := researchHSMTestViewer(join)
+	first := researchTestViewer(join)
 	researchHandleGuestConnected(first)
-	second := researchHSMTestViewer(join)
+	second := researchTestViewer(join)
 	researchHandleGuestConnected(second)
 	outbound := first.outbound.(*researchRecordingOutbound)
 	outbound.messages = nil
@@ -3359,9 +1638,9 @@ func TestSupersededUnifiedConnectionCannotMarkManualSeatsLoaded(t *testing.T) {
 func TestSupersededUnifiedConnectionCannotReattachItselfAsController(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	first := researchHSMTestViewer(join)
+	first := researchTestViewer(join)
 	researchHandleGuestConnected(first)
-	second := researchHSMTestViewer(join)
+	second := researchTestViewer(join)
 	researchHandleGuestConnected(second)
 	outbound := first.outbound.(*researchRecordingOutbound)
 	outbound.messages = nil
@@ -3387,7 +1666,7 @@ func TestSupersededUnifiedConnectionCannotReattachItselfAsController(t *testing.
 func TestUnifiedPerspectiveDoesNotAcquireTheResearchRegistryUnderTheTableLock(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	done := make(chan struct{})
 	researchSessionsMutex.Lock()
@@ -3414,7 +1693,7 @@ func TestUnifiedPerspectiveDoesNotAcquireTheResearchRegistryUnderTheTableLock(t 
 func TestUnifiedGameInfoReprojectsPrivateCardsAndNotesForTheViewedSeat(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	outbound := viewer.outbound.(*researchRecordingOutbound)
 
@@ -3460,7 +1739,7 @@ func TestUnifiedGameInfoReprojectsPrivateCardsAndNotesForTheViewedSeat(t *testin
 func TestUnifiedGameInfoReturnsOneCompleteServerScrubbedProjection(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	table, _ := tables.Get(created.TableID, true)
 	table.Lock(nil)
@@ -3523,7 +1802,7 @@ func TestUnifiedGameInfoReturnsOneCompleteServerScrubbedProjection(t *testing.T)
 func TestUnifiedGameInfoInstallsProjectionBeforeSharedLiveNotifications(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	outbound := viewer.outbound.(*researchRecordingOutbound)
 	outbound.messages = nil
@@ -3541,7 +1820,7 @@ func TestUnifiedGameInfoInstallsProjectionBeforeSharedLiveNotifications(t *testi
 func TestUnifiedNoteEditUpdatesAndNotifiesOnlyTheViewedPlayersNotes(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	table, _ := tables.Get(created.TableID, true)
 	table.Lock(nil)
@@ -3593,7 +1872,7 @@ func TestUnifiedNoteEditUpdatesAndNotifiesOnlyTheViewedPlayersNotes(t *testing.T
 func TestUnifiedNoteRejectsTheProjectionThatWasSupersededByPerspectiveSwitch(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	commandResearchPerspective(context.Background(), viewer, &CommandData{
 		TableID:                    created.TableID,
@@ -3631,7 +1910,7 @@ func TestUnifiedNoteRejectsTheProjectionThatWasSupersededByPerspectiveSwitch(t *
 func TestUnifiedLoadedBrowserKeepsEveryManualSeatPresent(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 
 	commandLoaded(context.Background(), viewer, &CommandData{TableID: created.TableID})
@@ -3649,7 +1928,7 @@ func TestUnifiedLoadedBrowserKeepsEveryManualSeatPresent(t *testing.T) {
 func TestUnifiedPauseCapabilityMatchesServerAuthorization(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	table, _ := tables.Get(created.TableID, true)
 	table.Lock(nil)
@@ -3693,7 +1972,7 @@ func TestUnifiedPauseCapabilityMatchesServerAuthorization(t *testing.T) {
 func TestUnifiedProjectionTracksAnAuthoritativeServerSidePause(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	table, _ := tables.Get(created.TableID, true)
 	table.Lock(nil)
@@ -3724,7 +2003,7 @@ func TestUnifiedTerminateCapabilityMatchesServerAuthorization(t *testing.T) {
 		scheduledFollow = follow
 	}
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	outbound := viewer.outbound.(*researchRecordingOutbound)
 	outbound.messages = nil
@@ -3792,7 +2071,7 @@ func TestUnifiedTerminateCapabilityMatchesServerAuthorization(t *testing.T) {
 func TestUnifiedTerminationVoteBelongsToTheViewedPlayerProjection(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	outbound := viewer.outbound.(*researchRecordingOutbound)
 	outbound.messages = nil
@@ -3835,7 +2114,7 @@ func TestUnifiedTerminationVoteBelongsToTheViewedPlayerProjection(t *testing.T) 
 func TestUnifiedControllerDoesNotReceiveLegacyFinishOngoingGame(t *testing.T) {
 	researchTestInit(t)
 	created, join := researchCreateUnifiedTwoPlayerGame(t, researchTestRouter())
-	viewer := researchHSMTestViewer(join)
+	viewer := researchTestViewer(join)
 	researchHandleGuestConnected(viewer)
 	outbound := viewer.outbound.(*researchRecordingOutbound)
 	outbound.messages = nil
@@ -3867,8 +2146,8 @@ func TestRegularManualPlayerProtocolRemainsUnchanged(t *testing.T) {
 	}
 	firstJoin := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
 	secondJoin := researchJoinTokens[path.Base(created.JoinLinks["roster_player_1"])]
-	first := researchHSMTestViewer(firstJoin)
-	second := researchHSMTestViewer(secondJoin)
+	first := researchTestViewer(firstJoin)
+	second := researchTestViewer(secondJoin)
 	researchHandleGuestConnected(first)
 	researchHandleGuestConnected(second)
 	firstOutbound := first.outbound.(*researchRecordingOutbound)
@@ -3915,8 +2194,8 @@ func TestRegularPlayerNoteDoesNotRequireAUnifiedProjectionEnvelope(t *testing.T)
 	}
 	firstJoin := researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])]
 	secondJoin := researchJoinTokens[path.Base(created.JoinLinks["roster_player_1"])]
-	first := researchHSMTestViewer(firstJoin)
-	second := researchHSMTestViewer(secondJoin)
+	first := researchTestViewer(firstJoin)
+	second := researchTestViewer(secondJoin)
 	researchHandleGuestConnected(first)
 	researchHandleGuestConnected(second)
 
@@ -3947,8 +2226,8 @@ func TestRegularSpectatorStillReceivesOrdinaryIncrementalActions(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
 		t.Fatalf("failed to parse regular create response: %v", err)
 	}
-	first := researchHSMTestViewer(researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])])
-	second := researchHSMTestViewer(researchJoinTokens[path.Base(created.JoinLinks["roster_player_1"])])
+	first := researchTestViewer(researchJoinTokens[path.Base(created.JoinLinks["roster_player_0"])])
+	second := researchTestViewer(researchJoinTokens[path.Base(created.JoinLinks["roster_player_1"])])
 	researchHandleGuestConnected(first)
 	researchHandleGuestConnected(second)
 	spectator := NewFakeSession(424242, "Ordinary Spectator")
@@ -4776,8 +3055,7 @@ func researchJSONRequest(
 
 func researchSingleGamePayload() ResearchCreatePayload {
 	return ResearchCreatePayload{
-		Mode:                 "single_game",
-		HSMSemanticProfileID: 3,
+		Mode: "single_game",
 		Game: ResearchGamePayload{
 			Seed:            100,
 			GameIndex:       2,
@@ -4847,79 +3125,6 @@ func researchIntPtr(value int) *int {
 
 func researchUint64Ptr(value uint64) *uint64 {
 	return &value
-}
-
-func researchValidHSMSnapshot(_ int) ResearchHSMSnapshot {
-	emptyProjection := ResearchHSMDiagnosticProjection{
-		Applications:          []ResearchHSMConventionApplication{},
-		CardBeliefs:           []ResearchHSMCardBelief{},
-		PlayConnections:       []ResearchHSMPlayConnection{},
-		ConnectionObligations: []ResearchHSMConnectionObligation{},
-		Classifications:       []ResearchHSMClassification{},
-		SemanticValues:        []ResearchHSMSemanticValue{},
-	}
-	return ResearchHSMSnapshot{
-		SemanticProfileID:              3,
-		AggregateActionClassifications: []ResearchHSMClassification{},
-		MistakenActions:                []ResearchHSMMistakenAction{},
-		Diagnoses: []ResearchHSMDiagnosis{
-			{
-				Label: "hsm-diagnosis:0000000000000000000000000000000000000000000000000000000000000000",
-				PhysicalGuard: ResearchHSMPhysicalGuard{
-					WorldIDs:          []int{1},
-					EvidenceBoundary:  0,
-					SemanticProfileID: 3,
-				},
-				ResearchHSMDiagnosticProjection: emptyProjection,
-			},
-		},
-		Consensus:         emptyProjection,
-		ViolationWarnings: []ResearchHSMViolationWarning{},
-		PlainText:         "[hsm] exact",
-	}
-}
-
-func researchValidHSMSnapshotForRequest(
-	request ResearchHSMSnapshotRequest,
-) ResearchHSMSnapshot {
-	snapshot := researchValidHSMSnapshot(request.ActorPlayer)
-	snapshot.GenerationID = request.ArchiveGenerationID
-	snapshot.TargetBoundary = request.TargetBoundary
-	snapshot.EvidenceBoundary = request.EvidenceBoundary
-	snapshot.PerspectivePlayer = request.PerspectivePlayer
-	snapshot.SemanticProfileID = request.SemanticProfileID
-	snapshot.AuthorityLegalActionProjection =
-		request.AuthorityLegalProjection.legality()
-	for index := range snapshot.Diagnoses {
-		snapshot.Diagnoses[index].PhysicalGuard.EvidenceBoundary =
-			request.EvidenceBoundary
-		snapshot.Diagnoses[index].PhysicalGuard.SemanticProfileID =
-			request.SemanticProfileID
-	}
-	return snapshot
-}
-
-func researchValidHSMFailureForRequest(
-	request ResearchHSMSnapshotRequest,
-) ResearchHSMFailure {
-	return ResearchHSMFailure{
-		Category:              "semantic_program_unsatisfiable",
-		Phase:                 "exact_solving",
-		TopologyID:            1,
-		CapacityManifestID:    "manifest-v1",
-		SemanticProgramID:     "sha256:0aa06d6cad330fb09d2520a6d35fc79c2f3086f3eb0e08f32a447c485b637bda",
-		SemanticProfileID:     request.SemanticProfileID,
-		LegalActionProjection: request.AuthorityLegalProjection.legality(),
-		UnsatisfiableCore: &ResearchHSMUnsatisfiableCore{
-			SubsetMinimal:    true,
-			CoordinateKind:   []string{"stable_card"},
-			TransitionIndex:  []int{0},
-			RuleIndex:        []int{1},
-			SubjectIndex:     []int{12},
-			EvidenceBoundary: []int{request.EvidenceBoundary},
-			ProvenanceID:     []int{71},
-		},
-	}
 }
 
 func researchValidDeck() []ResearchCardIdentity {

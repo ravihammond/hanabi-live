@@ -3,17 +3,6 @@
 // e.g. in-game replays.
 
 import type { Spectator } from "@hanabi-live/data";
-import {
-  hsmPhysicalTruthFailureMessage,
-  hsmPhysicalTruthIdentity,
-  hsmPhysicalTruthMessage,
-  hsmPhysicalTruthRejectedMessage,
-  hsmResponseIdentity,
-  hsmSnapshotFailureMessage,
-  hsmSnapshotMessage,
-  hsmSnapshotRejectedMessage,
-  hsmSnapshotUnavailableMessage,
-} from "@hanabi-live/data";
 import type {
   CardIdentity,
   CardOrder,
@@ -48,30 +37,6 @@ import { globals } from "./UIGlobals";
 import * as arrows from "./arrows";
 import { setSkullEnabled, setSkullNormal } from "./drawUI";
 import { getCardOrStackBase } from "./getCardOrStackBase";
-import {
-  handleHSMPhysicalTruth,
-  handleHSMPhysicalTruthFailure,
-  handleHSMPhysicalTruthPending,
-  handleHSMPhysicalTruthRejected,
-  handleHSMSnapshot,
-  handleHSMSnapshotFailure,
-  handleHSMSnapshotPending,
-  handleHSMSnapshotRejected,
-  handleHSMSnapshotUnavailable,
-  initHSMInspector,
-  setHSMTargetBoundary,
-} from "./hsmInspector";
-import type {
-  HSMPhysicalTruthFailureMessage,
-  HSMPhysicalTruthMessage,
-  HSMPhysicalTruthPendingMessage,
-  HSMPhysicalTruthRejectedMessage,
-  HSMSnapshotFailureMessage,
-  HSMSnapshotMessage,
-  HSMSnapshotPendingMessage,
-  HSMSnapshotRejectedMessage,
-  HSMSnapshotUnavailableMessage,
-} from "./hsmInspectorContract";
 import * as hypothetical from "./hypothetical";
 import * as notes from "./notes";
 import { StateObserver } from "./reactive/StateObserver";
@@ -231,20 +196,6 @@ gameCommands.set("init", (metadata: InitData) => {
   setURL(metadata);
   initStateStore(metadata);
 
-  initHSMInspector(
-    metadata.hsmDebug === undefined
-      ? null
-      : {
-          ...metadata.hsmDebug,
-          tableID: metadata.tableID,
-          playerNames: metadata.playerNames,
-        },
-    (command, data) => {
-      globals.lobby.conn!.send(command, data);
-    },
-  );
-  globals.lobby.ui?.applyHSMReservedLayout();
-
   // Now that we know the number of players and the variant, we can start to load & draw the UI.
   uiInit();
 });
@@ -275,7 +226,6 @@ gameCommands.set("researchUnifiedProjection", (data: UnifiedProjectionData) => {
   if (!installUnifiedProjection(data)) {
     return;
   }
-  syncHSMToVisibleBoundary();
   if (!globals.loading) {
     setNoteIndicatorAndCheckForSpecialNote();
   }
@@ -373,7 +323,6 @@ gameCommands.set("gameAction", (data: GameActionData) => {
   }
   // Update the game state.
   globals.store!.dispatch(data.action);
-  syncHSMToVisibleBoundary();
 });
 
 interface GameActionListData {
@@ -398,7 +347,6 @@ gameCommands.set("gameActionList", (data: GameActionListData) => {
     type: "gameActionList",
     actions: data.list,
   });
-  syncHSMToVisibleBoundary();
 
   // We might need to go to a specific turn if we loaded a URL of e.g.:
   // http://localhost/replay/123#5
@@ -406,81 +354,6 @@ gameCommands.set("gameActionList", (data: GameActionListData) => {
     replay.goTo(specificTurnString);
   }
 });
-
-gameCommands.set("hsmSnapshot", (data: HSMSnapshotMessage) => {
-  const parsed = hsmSnapshotMessage.safeParse(data);
-  if (parsed.success) {
-    handleHSMSnapshot(parsed.data);
-  }
-});
-
-gameCommands.set("hsmSnapshotPending", (data: HSMSnapshotPendingMessage) => {
-  const parsed = hsmResponseIdentity.safeParse(data);
-  if (parsed.success) {
-    handleHSMSnapshotPending(parsed.data);
-  }
-});
-
-gameCommands.set("hsmSnapshotFailure", (data: HSMSnapshotFailureMessage) => {
-  const parsed = hsmSnapshotFailureMessage.safeParse(data);
-  if (parsed.success) {
-    handleHSMSnapshotFailure(parsed.data);
-  }
-});
-
-gameCommands.set("hsmSnapshotRejected", (data: HSMSnapshotRejectedMessage) => {
-  const parsed = hsmSnapshotRejectedMessage.safeParse(data);
-  if (parsed.success) {
-    handleHSMSnapshotRejected(parsed.data);
-  }
-});
-
-gameCommands.set(
-  "hsmSnapshotUnavailable",
-  (data: HSMSnapshotUnavailableMessage) => {
-    const parsed = hsmSnapshotUnavailableMessage.safeParse(data);
-    if (parsed.success) {
-      handleHSMSnapshotUnavailable(parsed.data);
-    }
-  },
-);
-
-gameCommands.set(
-  "hsmPhysicalTruthPending",
-  (data: HSMPhysicalTruthPendingMessage) => {
-    const parsed = hsmPhysicalTruthIdentity.safeParse(data);
-    if (parsed.success) {
-      handleHSMPhysicalTruthPending(parsed.data);
-    }
-  },
-);
-
-gameCommands.set("hsmPhysicalTruth", (data: HSMPhysicalTruthMessage) => {
-  const parsed = hsmPhysicalTruthMessage.safeParse(data);
-  if (parsed.success) {
-    handleHSMPhysicalTruth(parsed.data);
-  }
-});
-
-gameCommands.set(
-  "hsmPhysicalTruthFailure",
-  (data: HSMPhysicalTruthFailureMessage) => {
-    const parsed = hsmPhysicalTruthFailureMessage.safeParse(data);
-    if (parsed.success) {
-      handleHSMPhysicalTruthFailure(parsed.data);
-    }
-  },
-);
-
-gameCommands.set(
-  "hsmPhysicalTruthRejected",
-  (data: HSMPhysicalTruthRejectedMessage) => {
-    const parsed = hsmPhysicalTruthRejectedMessage.safeParse(data);
-    if (parsed.success) {
-      handleHSMPhysicalTruthRejected(parsed.data);
-    }
-  },
-);
 
 interface PauseData {
   active: boolean;
@@ -648,21 +521,6 @@ function setNoteIndicatorAndCheckForSpecialNote() {
   for (const stackBase of globals.stackBases) {
     stackBase.checkSpecialNote();
   }
-}
-
-export function syncHSMToVisibleBoundary(): void {
-  if (globals.store === null) {
-    return;
-  }
-  const visible = globals.state.visibleState ?? globals.state.ongoingGame;
-  const actor =
-    visible.turn.currentPlayerIndex ?? globals.metadata.ourPlayerIndex;
-  setHSMTargetBoundary(
-    visible.turn.turnNum,
-    globals.state.ongoingGame.turn.turnNum,
-    actor,
-    globals.state.finished,
-  );
 }
 
 function suggestTurn(who: string, room: string, segment: number) {

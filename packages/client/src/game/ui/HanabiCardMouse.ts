@@ -9,7 +9,6 @@ import type { HanabiCard } from "./HanabiCard";
 import { HanabiCardClick } from "./HanabiCardClick";
 import { mouseDownSpeedrun } from "./HanabiCardClickSpeedrun";
 import { HanabiCardDblTap, HanabiCardTap } from "./HanabiCardTouchActions";
-import { hasHSMCardTooltip } from "./hsmInspector";
 import * as konvaTooltips from "./konvaTooltips";
 import type { LayoutChild } from "./LayoutChild";
 import * as notes from "./notes";
@@ -162,7 +161,6 @@ function checkShowNoteTooltip(card: HanabiCard) {
   if (
     card.noteIndicator.isVisible() === false
     && card.state.location !== "playStack"
-    && !hasHSMCardTooltip(card.state.order)
   ) {
     // Do not do anything if there is not a note on this card in hand.
     return;

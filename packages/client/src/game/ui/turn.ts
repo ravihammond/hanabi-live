@@ -5,7 +5,6 @@ import type { ClientAction } from "../types/ClientAction";
 import { globals } from "./UIGlobals";
 import * as arrows from "./arrows";
 import { PREPLAY_DELAY_MILLISECONDS } from "./constants";
-import { isHSMInspectionReadOnly } from "./hsmInspector";
 import * as hypothetical from "./hypothetical";
 import { isOurTurn } from "./isOurTurn";
 import * as ourHand from "./ourHand";
@@ -31,9 +30,6 @@ export function begin(): void {
 
 // Handle pre-playing / pre-discarding / pre-cluing.
 function handlePremove() {
-  if (isHSMInspectionReadOnly()) {
-    return;
-  }
   const { premove } = globals.state;
   const { clueTokens } = globals.state.ongoingGame;
 
@@ -105,9 +101,6 @@ export function resetSelectedClue(): void {
 }
 
 export function end(clientAction: ClientAction): void {
-  if (isHSMInspectionReadOnly()) {
-    return;
-  }
   if (globals.state.replay.hypothetical !== null) {
     hypothetical.sendHypotheticalAction(clientAction);
     return;
