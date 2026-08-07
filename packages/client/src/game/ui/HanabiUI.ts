@@ -229,35 +229,35 @@ function getStageSize(
 ): { width: number; height: number } {
   const ratio = 16 / 9;
 
-  let ww = windowWidth;
-  let wh = windowHeight;
+  let stageWidth = windowWidth;
+  let stageHeight = windowHeight;
 
-  if (ww < 240) {
+  if (stageWidth < 240) {
     // The stage seems to break for widths of around 235 px or less.
-    ww = 240;
+    stageWidth = 240;
   }
-  if (wh < 135) {
-    wh = 135;
+  if (stageHeight < 135) {
+    stageHeight = 135;
   }
 
   let width: number;
   let height: number;
-  if (ww < wh * ratio) {
-    width = ww;
-    height = ww / ratio;
+  if (stageWidth < stageHeight * ratio) {
+    width = stageWidth;
+    height = stageWidth / ratio;
   } else {
-    height = wh;
-    width = wh * ratio;
+    height = stageHeight;
+    width = stageHeight * ratio;
   }
 
   width = Math.floor(width);
   height = Math.floor(height);
 
-  if (width > 0.98 * ww) {
-    width = ww;
+  if (width > 0.98 * stageWidth) {
+    width = stageWidth;
   }
-  if (height > 0.98 * wh) {
-    height = wh;
+  if (height > 0.98 * stageHeight) {
+    height = stageHeight;
   }
 
   return {
