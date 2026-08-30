@@ -15,7 +15,9 @@ const sourcePaths = [
   path.join(cssLibDir, "tooltipster.bundle.min.css"),
   path.join(cssLibDir, "tooltipster-sideTip-shadow.min.css"),
   path.join(cssLibDir, "alpha.css"),
+  path.join(cssLibDir, "xterm.css"),
   path.join(cssDir, "hanabi.css"),
+  path.join(cssDir, "local-terminal.css"),
 ];
 
 fs.mkdirSync(outputDir, { recursive: true });

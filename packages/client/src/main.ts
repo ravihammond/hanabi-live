@@ -16,6 +16,7 @@ import { lobbyKeyboardInit } from "./lobby/lobbyKeyboardInit";
 import { lobbyTutorialInit } from "./lobby/lobbyTutorialInit";
 import * as lobbyLogin from "./lobby/login";
 import * as lobbyNav from "./lobby/nav";
+import { initLocalTerminal } from "./localTerminal";
 import * as playerSettings from "./lobby/playerSettings";
 import { Screen } from "./lobby/types/Screen";
 import * as lobbyWatchReplay from "./lobby/watchReplay";
@@ -46,6 +47,8 @@ if (
 initErrorListener();
 
 $(document).ready(() => {
+  initLocalTerminal();
+
   // Set an event handler for when the entire window loses focus.
   $(globalThis).blur(() => {
     if (globals.currentScreen === Screen.Game && globals.ui !== null) {

@@ -36,6 +36,8 @@
     "@types/tooltipster": "0.0.35",
     "@types/unidecode": "1.1.0",
     "@types/ws": "8.18.1",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
     "argon2": "0.44.0",
     "complete-common": "2.22.1",
     "complete-node": "16.4.0",

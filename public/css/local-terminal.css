@@ -1,0 +1,79 @@
+#local-terminal-panel {
+  position: fixed;
+  z-index: 100000;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden;
+  color: #c5d8d9;
+  background: #001e27;
+  border: 1px solid #006488;
+  border-radius: 6px;
+  box-shadow: 0 8px 28px rgb(0 0 0 / 55%);
+}
+
+#local-terminal-panel[hidden],
+#local-terminal-launcher[hidden] {
+  display: none;
+}
+
+.local-terminal-header {
+  display: flex;
+  flex: 0 0 30px;
+  align-items: center;
+  justify-content: space-between;
+  box-sizing: border-box;
+  padding: 0 8px;
+  color: #c5d8d9;
+  background: #002831;
+  cursor: move;
+  user-select: none;
+}
+
+.local-terminal-header button,
+#local-terminal-launcher {
+  padding: 0;
+  color: #c5d8d9;
+  background: #002831;
+  border: 1px solid #006488;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.local-terminal-header button {
+  width: 24px;
+  height: 22px;
+}
+
+.local-terminal-screen {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 6px;
+  background: #001e27;
+}
+
+.local-terminal-screen .xterm {
+  height: 100%;
+}
+
+.local-terminal-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
+#local-terminal-launcher {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  z-index: 100001;
+  width: 36px;
+  height: 34px;
+  font-size: 16px;
+}
