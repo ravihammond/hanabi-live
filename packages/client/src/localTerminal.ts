@@ -36,6 +36,7 @@ const TERMINAL_OPTIONS = {
 
 interface TerminalDescriptor {
   endpoint: string;
+  mode?: "hsm-profiler";
   version: 1;
 }
 
@@ -47,11 +48,54 @@ interface TerminalLayout {
   width: number;
 }
 
+interface SessionViewport {
+  atBottom: boolean;
+  line: number;
+}
+
+interface ProfilerConnection {
+  activeBoundary: number | undefined;
+  generation: number | undefined;
+  opened: boolean;
+  pendingBoundary: number | undefined;
+  sentBoundary: number | undefined;
+  setReplayFinished: (finished: boolean) => void;
+  socket: WebSocket;
+  terminal: Terminal;
+  viewports: Map<number, SessionViewport>;
+}
+
+interface ReplayMessage {
+  boundary?: number;
+  generation?: number;
+  type: "replay-start" | "replay-end" | "profiler-reset";
+}
+
 let removeViewportListener: (() => void) | undefined;
+let profilerConnection: ProfilerConnection | undefined;
+
+export function selectLocalTerminalBoundary(boundary: number): void {
+  const connection = profilerConnection;
+  if (
+    connection === undefined
+    || !Number.isInteger(boundary)
+    || boundary < 0
+    || connection.sentBoundary === boundary
+  ) {
+    return;
+  }
+  connection.pendingBoundary = boundary;
+  connection.setReplayFinished(false);
+  if (!connection.opened) {
+    return;
+  }
+  sendSelectedBoundary(connection);
+}
 
 export function initLocalTerminal(): void {
   removeViewportListener?.();
   removeViewportListener = undefined;
+  profilerConnection = undefined;
   const descriptor = readDescriptor();
   if (descriptor === undefined) {
     return;
@@ -62,18 +106,56 @@ export function initLocalTerminal(): void {
   const socket = new WebSocket(descriptor.endpoint);
   socket.binaryType = "arraybuffer";
   let replayFinished = false;
+  if (descriptor.mode === "hsm-profiler") {
+    profilerConnection = {
+      activeBoundary: undefined,
+      generation: undefined,
+      opened: false,
+      pendingBoundary: undefined,
+      sentBoundary: undefined,
+      setReplayFinished: (finished) => {
+        replayFinished = finished;
+      },
+      socket,
+      terminal,
+      viewports: new Map(),
+    };
+  }
   socket.addEventListener("open", () => {
     mountTerminal(terminal, fitAddon, socket);
+    if (profilerConnection?.socket === socket) {
+      profilerConnection.opened = true;
+      sendSelectedBoundary(profilerConnection);
+    }
   });
   socket.addEventListener("message", (event) => {
     if (typeof event.data === "string") {
-      const replayMessage = replayMessageType(event.data);
-      if (replayMessage === "start") {
+      const replayMessage = parseReplayMessage(event.data);
+      const connection =
+        profilerConnection?.socket === socket ? profilerConnection : undefined;
+      if (replayMessage?.type === "replay-start") {
         replayFinished = false;
-      } else if (replayMessage === "end") {
+        if (connection !== undefined) {
+          startProfilerReplay(connection, replayMessage);
+        }
+      } else if (replayMessage?.type === "replay-end") {
+        if (
+          connection !== undefined
+          && !matchesActiveProfilerReplay(connection, replayMessage)
+        ) {
+          return;
+        }
         terminal.write("", () => {
+          if (connection !== undefined) {
+            restoreProfilerViewport(connection, replayMessage);
+          }
           replayFinished = true;
         });
+      } else if (
+        replayMessage?.type === "profiler-reset"
+        && connection !== undefined
+      ) {
+        resetProfiler(connection, replayMessage);
       }
     } else if (event.data instanceof ArrayBuffer) {
       terminal.write(new Uint8Array(event.data));
@@ -278,19 +360,93 @@ function saveLayout(layout: TerminalLayout) {
   localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
 }
 
-function replayMessageType(message: string): "start" | "end" | undefined {
+function parseReplayMessage(message: string): ReplayMessage | undefined {
   try {
-    const payload = JSON.parse(message) as { type?: string };
-    if (payload.type === "replay-start") {
-      return "start";
-    }
-    if (payload.type === "replay-end") {
-      return "end";
+    const payload = JSON.parse(message) as Partial<ReplayMessage>;
+    if (
+      payload.type === "replay-start"
+      || payload.type === "replay-end"
+      || payload.type === "profiler-reset"
+    ) {
+      return payload as ReplayMessage;
     }
   } catch {
     return undefined;
   }
   return undefined;
+}
+
+function startProfilerReplay(
+  connection: ProfilerConnection,
+  message: ReplayMessage,
+) {
+  if (!validProfilerReplayMessage(message)) {
+    return;
+  }
+  if (connection.generation !== message.generation) {
+    connection.generation = message.generation;
+    connection.activeBoundary = undefined;
+    connection.viewports.clear();
+  } else if (connection.activeBoundary !== undefined) {
+    const buffer = connection.terminal.buffer.active;
+    connection.viewports.set(connection.activeBoundary, {
+      atBottom: buffer.viewportY === buffer.baseY,
+      line: buffer.viewportY,
+    });
+  }
+  connection.activeBoundary = message.boundary;
+  connection.terminal.reset();
+}
+
+function restoreProfilerViewport(
+  connection: ProfilerConnection,
+  message: ReplayMessage,
+) {
+  const { boundary } = message;
+  if (boundary === undefined) {
+    return;
+  }
+  const viewport = connection.viewports.get(boundary);
+  if (viewport?.atBottom === true) {
+    connection.terminal.scrollToBottom();
+  } else if (viewport !== undefined) {
+    connection.terminal.scrollToLine(viewport.line);
+  }
+}
+
+function matchesActiveProfilerReplay(
+  connection: ProfilerConnection,
+  message: ReplayMessage,
+) {
+  return (
+    validProfilerReplayMessage(message)
+    && message.generation === connection.generation
+    && message.boundary === connection.activeBoundary
+  );
+}
+
+function resetProfiler(connection: ProfilerConnection, message: ReplayMessage) {
+  if (!Number.isInteger(message.generation) || message.generation! < 0) {
+    return;
+  }
+  connection.setReplayFinished(false);
+  connection.generation = message.generation;
+  connection.activeBoundary = undefined;
+  connection.pendingBoundary = undefined;
+  connection.sentBoundary = undefined;
+  connection.viewports.clear();
+  connection.terminal.reset();
+}
+
+function validProfilerReplayMessage(
+  message: ReplayMessage,
+): message is Required<ReplayMessage> {
+  return (
+    Number.isInteger(message.generation)
+    && message.generation! >= 0
+    && Number.isInteger(message.boundary)
+    && message.boundary! >= 0
+  );
 }
 
 function readDescriptor(): TerminalDescriptor | undefined {
@@ -304,19 +460,39 @@ function readDescriptor(): TerminalDescriptor | undefined {
     return undefined;
   }
   try {
-    const candidate = JSON.parse(stored) as Partial<TerminalDescriptor>;
+    const candidate = JSON.parse(stored) as {
+      endpoint?: string;
+      mode?: unknown;
+      version?: unknown;
+    };
     const endpoint = new URL(candidate.endpoint ?? "");
     if (
       candidate.version !== 1
+      || (candidate.mode !== undefined && candidate.mode !== "hsm-profiler")
       || !isLoopbackTerminalEndpoint(endpoint)
     ) {
       throw new Error("invalid local terminal descriptor");
     }
-    return { version: 1, endpoint: endpoint.href };
+    return { version: 1, endpoint: endpoint.href, mode: candidate.mode };
   } catch {
     sessionStorage.removeItem(SESSION_KEY);
     return undefined;
   }
+}
+
+function sendSelectedBoundary(connection: ProfilerConnection) {
+  const boundary = connection.pendingBoundary;
+  if (boundary === undefined || boundary === connection.sentBoundary) {
+    return;
+  }
+  connection.socket.send(
+    JSON.stringify({
+      type: "select-boundary",
+      boundary,
+    }),
+  );
+  connection.sentBoundary = boundary;
+  connection.pendingBoundary = undefined;
 }
 
 function isLoopbackTerminalEndpoint(endpoint: URL): boolean {

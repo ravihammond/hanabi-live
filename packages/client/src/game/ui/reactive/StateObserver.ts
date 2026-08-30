@@ -1,5 +1,6 @@
 import type { GameState } from "@hanabi-live/game";
 import type { Store, Unsubscribe } from "redux";
+import { selectLocalTerminalBoundary } from "../../../localTerminal";
 import type { State } from "../../types/State";
 import type { Action } from "../../types/actions";
 import { globals } from "../UIGlobals";
@@ -410,6 +411,16 @@ const replayObservers: Subscriptions = [
 ];
 
 const otherObservers = [
+  subAfterInit(
+    (s) => s.unifiedController?.selectedBoundary
+      ?? (s.replay.active
+        ? s.replay.segment
+        : s.ongoingGame.turn.segment ?? undefined),
+    (boundary) => {
+      selectLocalTerminalBoundary(boundary);
+    },
+  ),
+
   // Premoves (e.g. queued actions)
   subAfterInit(
     (s) => premoveView.shouldShowCancelButton(s),

@@ -3,14 +3,19 @@ import { Terminal } from "@xterm/xterm";
 import { beforeEach, expect, jest, test } from "@jest/globals";
 import { TextEncoder as NodeTextEncoder } from "node:util";
 
-import { initLocalTerminal } from "./localTerminal";
+import {
+  initLocalTerminal,
+  selectLocalTerminalBoundary,
+} from "./localTerminal";
 
 jest.mock("@xterm/xterm", () => ({ Terminal: jest.fn() }));
 jest.mock("@xterm/addon-fit", () => ({ FitAddon: jest.fn() }));
 
 let mockDataHandler: ((data: string) => void) | undefined;
 let mockWriteCallbacks: Array<() => void> = [];
+const mockActiveBuffer = { baseY: 0, viewportY: 0 };
 const mockTerminal = {
+  buffer: { active: mockActiveBuffer },
   cols: 80,
   focus: jest.fn(),
   loadAddon: jest.fn(),
@@ -18,7 +23,10 @@ const mockTerminal = {
     mockDataHandler = handler;
   }),
   open: jest.fn(),
+  reset: jest.fn(),
   rows: 24,
+  scrollToBottom: jest.fn(),
+  scrollToLine: jest.fn(),
   write: jest.fn((_data: string | Uint8Array, callback?: () => void) => {
     if (callback !== undefined) {
       mockWriteCallbacks.push(callback);
@@ -60,6 +68,8 @@ beforeEach(() => {
   RecordingWebSocket.instances.length = 0;
   mockDataHandler = undefined;
   mockWriteCallbacks = [];
+  mockActiveBuffer.baseY = 0;
+  mockActiveBuffer.viewportY = 0;
   jest.clearAllMocks();
   mockTerminalConstructor.mockImplementation(() => mockTerminal as never);
   mockFitAddonConstructor.mockImplementation(() => mockFitAddon as never);
@@ -137,6 +147,118 @@ test("a local descriptor mounts only after its socket opens", () => {
 
   expect(document.querySelector("#local-terminal-panel")).not.toBeNull();
   expect(mockTerminal.open).toHaveBeenCalledTimes(1);
+});
+
+test("profiler mode sends the latest selected boundary once after opening", () => {
+  window.name = JSON.stringify({
+    version: 1,
+    endpoint: "ws://127.0.0.1:43210/terminal/private",
+    mode: "hsm-profiler",
+  });
+
+  initLocalTerminal();
+  const socket = RecordingWebSocket.instances[0];
+  selectLocalTerminalBoundary(2);
+  selectLocalTerminalBoundary(4);
+  selectLocalTerminalBoundary(4);
+
+  expect(socket?.sent).toEqual([]);
+
+  socket?.dispatchEvent(new Event("open"));
+  selectLocalTerminalBoundary(4);
+
+  expect(socket?.sent).toEqual([
+    '{"type":"resize","rows":24,"cols":80}',
+    '{"type":"select-boundary","boundary":4}',
+  ]);
+});
+
+test("profiler session switches preserve scroll without restoring or focusing the panel", () => {
+  window.name = JSON.stringify({
+    version: 1,
+    endpoint: "ws://127.0.0.1:43210/terminal/private",
+    mode: "hsm-profiler",
+  });
+
+  initLocalTerminal();
+  const socket = RecordingWebSocket.instances[0];
+  socket?.dispatchEvent(new Event("open"));
+  socket?.dispatchEvent(new MessageEvent("message", {
+    data: JSON.stringify({ type: "replay-start", generation: 1, boundary: 0 }),
+  }));
+  socket?.dispatchEvent(new MessageEvent("message", {
+    data: JSON.stringify({ type: "replay-end", generation: 1, boundary: 0 }),
+  }));
+  mockWriteCallbacks.shift()?.();
+
+  const panel = document.querySelector("#local-terminal-panel");
+  const minimize = document.querySelector("#local-terminal-minimize");
+  if (!(panel instanceof HTMLElement) || !(minimize instanceof HTMLButtonElement)) {
+    throw new TypeError("terminal panel did not mount");
+  }
+  minimize.click();
+  mockActiveBuffer.baseY = 30;
+  mockActiveBuffer.viewportY = 10;
+
+  selectLocalTerminalBoundary(1);
+  mockDataHandler?.("blocked while switching");
+  socket?.dispatchEvent(new MessageEvent("message", {
+    data: JSON.stringify({ type: "replay-start", generation: 1, boundary: 1 }),
+  }));
+  socket?.dispatchEvent(new MessageEvent("message", {
+    data: JSON.stringify({ type: "replay-end", generation: 1, boundary: 1 }),
+  }));
+  mockWriteCallbacks.shift()?.();
+  selectLocalTerminalBoundary(0);
+  socket?.dispatchEvent(new MessageEvent("message", {
+    data: JSON.stringify({ type: "replay-start", generation: 1, boundary: 0 }),
+  }));
+  socket?.dispatchEvent(new MessageEvent("message", {
+    data: JSON.stringify({ type: "replay-end", generation: 1, boundary: 0 }),
+  }));
+  mockWriteCallbacks.shift()?.();
+
+  expect(mockTerminal.reset).toHaveBeenCalledTimes(3);
+  expect(mockTerminal.scrollToLine).toHaveBeenLastCalledWith(10);
+  expect(socket?.sent).not.toContainEqual(expect.any(Uint8Array));
+  expect(panel.hidden).toBe(true);
+  expect(mockTerminal.focus).not.toHaveBeenCalled();
+});
+
+test("a profiler reset discards old session state and stale replay completion", () => {
+  window.name = JSON.stringify({
+    version: 1,
+    endpoint: "ws://127.0.0.1:43210/terminal/private",
+    mode: "hsm-profiler",
+  });
+
+  initLocalTerminal();
+  const socket = RecordingWebSocket.instances[0];
+  socket?.dispatchEvent(new Event("open"));
+  selectLocalTerminalBoundary(2);
+  socket?.dispatchEvent(new MessageEvent("message", {
+    data: JSON.stringify({ type: "replay-start", generation: 1, boundary: 2 }),
+  }));
+  socket?.dispatchEvent(new MessageEvent("message", {
+    data: JSON.stringify({ type: "replay-end", generation: 1, boundary: 2 }),
+  }));
+  mockWriteCallbacks.shift()?.();
+
+  socket?.dispatchEvent(new MessageEvent("message", {
+    data: JSON.stringify({ type: "profiler-reset", generation: 2 }),
+  }));
+  selectLocalTerminalBoundary(2);
+  socket?.dispatchEvent(new MessageEvent("message", {
+    data: JSON.stringify({ type: "replay-end", generation: 1, boundary: 2 }),
+  }));
+  mockWriteCallbacks.shift()?.();
+  mockDataHandler?.("blocked after stale completion");
+
+  expect(mockTerminal.reset).toHaveBeenCalledTimes(2);
+  expect(socket?.sent.filter((message) => (
+    message === '{"type":"select-boundary","boundary":2}'
+  ))).toHaveLength(2);
+  expect(socket?.sent).not.toContainEqual(expect.any(Uint8Array));
 });
 
 test("the terminal uses the effective iTerm2 dark palette", () => {
