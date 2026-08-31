@@ -59,13 +59,52 @@
 
 .local-terminal-resize {
   position: absolute;
-  right: 0;
-  bottom: 0;
   z-index: 1;
-  width: 16px;
-  height: 16px;
-  cursor: nwse-resize;
+  width: 8px;
+  height: 8px;
   touch-action: none;
+}
+
+.local-terminal-resize[data-direction="top"],
+.local-terminal-resize[data-direction="bottom"] {
+  right: 8px;
+  left: 8px;
+  width: auto;
+  cursor: ns-resize;
+}
+
+.local-terminal-resize[data-direction="right"],
+.local-terminal-resize[data-direction="left"] {
+  top: 8px;
+  bottom: 8px;
+  height: auto;
+  cursor: ew-resize;
+}
+
+.local-terminal-resize[data-direction^="top"] {
+  top: 0;
+}
+
+.local-terminal-resize[data-direction^="bottom"] {
+  bottom: 0;
+}
+
+.local-terminal-resize[data-direction$="right"] {
+  right: 0;
+}
+
+.local-terminal-resize[data-direction$="left"] {
+  left: 0;
+}
+
+.local-terminal-resize[data-direction="top-right"],
+.local-terminal-resize[data-direction="bottom-left"] {
+  cursor: nesw-resize;
+}
+
+.local-terminal-resize[data-direction="bottom-right"],
+.local-terminal-resize[data-direction="top-left"] {
+  cursor: nwse-resize;
 }
 
 #local-terminal-launcher {

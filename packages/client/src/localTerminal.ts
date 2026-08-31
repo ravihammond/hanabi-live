@@ -4,6 +4,16 @@ import interact from "interactjs";
 
 const SESSION_KEY = "hanabi-live.local-terminal.v1";
 const LAYOUT_KEY = "hanabi-live.local-terminal.layout.v1";
+const RESIZE_DIRECTIONS = [
+  "top",
+  "top-right",
+  "right",
+  "bottom-right",
+  "bottom",
+  "bottom-left",
+  "left",
+  "top-left",
+] as const;
 const TERMINAL_OPTIONS = {
   drawBoldTextInBrightColors: true,
   fontFamily: '"Hack Nerd Font Mono", Hack, Menlo, monospace',
@@ -189,10 +199,17 @@ function mountTerminal(
   header.append(minimize);
   const terminalElement = document.createElement("div");
   terminalElement.className = "local-terminal-screen";
-  const resizeHandle = document.createElement("div");
-  resizeHandle.className = "local-terminal-resize";
-  resizeHandle.setAttribute("aria-hidden", "true");
-  panel.append(header, terminalElement, resizeHandle);
+  panel.append(header, terminalElement);
+  for (const direction of RESIZE_DIRECTIONS) {
+    const resizeHandle = document.createElement("div");
+    const edgeClasses = direction.split("-").map(
+      (edge) => `local-terminal-resize-${edge}`,
+    );
+    resizeHandle.classList.add("local-terminal-resize", ...edgeClasses);
+    resizeHandle.dataset["direction"] = direction;
+    resizeHandle.setAttribute("aria-hidden", "true");
+    panel.append(resizeHandle);
+  }
   for (const type of ["keydown", "keyup", "keypress"]) {
     panel.addEventListener(type, (event) => {
       event.stopPropagation();
@@ -228,7 +245,7 @@ function mountTerminal(
     fitTerminal(terminal, fitAddon, socket);
     terminal.focus();
   });
-  configureInteraction(panel, header, resizeHandle, layout, terminal, fitAddon, socket);
+  configureInteraction(panel, header, layout, terminal, fitAddon, socket);
   function handleViewportResize() {
     Object.assign(layout, clampLayout(layout));
     applyLayout(panel, layout);
@@ -246,7 +263,6 @@ function mountTerminal(
 function configureInteraction(
   panel: HTMLElement,
   header: HTMLElement,
-  resizeHandle: HTMLElement,
   layout: TerminalLayout,
   terminal: Terminal,
   fitAddon: FitAddon,
@@ -268,7 +284,12 @@ function configureInteraction(
       },
     })
     .resizable({
-      edges: { right: resizeHandle, bottom: resizeHandle },
+      edges: {
+        top: ".local-terminal-resize-top",
+        right: ".local-terminal-resize-right",
+        bottom: ".local-terminal-resize-bottom",
+        left: ".local-terminal-resize-left",
+      },
       modifiers: [
         interact.modifiers.restrictSize({ min: { width: 320, height: 180 } }),
       ],

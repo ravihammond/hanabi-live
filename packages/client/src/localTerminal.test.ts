@@ -367,7 +367,19 @@ test("minimize persists only layout and keeps the terminal connected", () => {
   expect(mockFitAddon.fit).toHaveBeenCalledTimes(2);
   expect(mockTerminal.focus).toHaveBeenCalledTimes(1);
   expect(panel.querySelector("[data-action='close']")).toBeNull();
-  expect(panel.querySelector(".local-terminal-resize")).toBeInstanceOf(HTMLElement);
+  const resizeDirections = [...panel.querySelectorAll<HTMLElement>(
+    ".local-terminal-resize",
+  )].map((handle) => handle.dataset["direction"]);
+  expect(resizeDirections).toEqual([
+    "top",
+    "top-right",
+    "right",
+    "bottom-right",
+    "bottom",
+    "bottom-left",
+    "left",
+    "top-left",
+  ]);
   expect(panel.textContent).not.toContain("Restart");
   expect(panel.textContent).not.toMatch(/Search|Settings|Tabs/);
   expect(launcher?.querySelector("[class*='badge']")).toBeNull();
