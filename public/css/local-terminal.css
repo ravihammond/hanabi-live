@@ -5,6 +5,7 @@
   flex-direction: column;
   box-sizing: border-box;
   overflow: hidden;
+  opacity: 0.95;
   color: #c5d8d9;
   background: #001e27;
   border: 1px solid #006488;
