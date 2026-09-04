@@ -298,6 +298,7 @@ test("the terminal uses the effective iTerm2 dark palette", () => {
       red: "#D11C24",
       selectionBackground: "#003748",
       selectionForeground: "#7A8F8E",
+      scrollbarSliderBackground: "#001E2700",
       white: "#EAE3CB",
       yellow: "#A57706",
     },
