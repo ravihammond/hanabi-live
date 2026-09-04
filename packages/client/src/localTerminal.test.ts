@@ -298,7 +298,6 @@ test("the terminal uses the effective iTerm2 dark palette", () => {
       red: "#D11C24",
       selectionBackground: "#003748",
       selectionForeground: "#7A8F8E",
-      scrollbarSliderBackground: "#001E2700",
       white: "#EAE3CB",
       yellow: "#A57706",
     },
@@ -336,9 +335,17 @@ test("the terminal body is translucent without fading its chrome", () => {
   }
   const xterm = document.createElement("div");
   const viewport = document.createElement("div");
+  const slider = document.createElement("div");
   xterm.className = "xterm";
   viewport.className = "xterm-viewport";
-  xterm.append(viewport);
+  slider.className = "slider";
+  const scrollbar = document.createElement("div");
+  scrollbar.className = "scrollbar";
+  scrollbar.append(slider);
+  const scrollable = document.createElement("div");
+  scrollable.className = "xterm-scrollable-element";
+  scrollable.append(scrollbar);
+  xterm.append(viewport, scrollable);
   screen.append(xterm);
   expect(getComputedStyle(panel).backgroundColor).toBe("rgba(0, 30, 39, 0.95)");
   expect(["", "1"]).toContain(getComputedStyle(panel).opacity);
@@ -346,6 +353,8 @@ test("the terminal body is translucent without fading its chrome", () => {
   expect(getComputedStyle(header).color).toBe("rgb(197, 216, 217)");
   expect(getComputedStyle(screen).backgroundColor).toBe("rgba(0, 0, 0, 0)");
   expect(getComputedStyle(viewport).backgroundColor).toBe("rgba(0, 0, 0, 0)");
+  expect(getComputedStyle(viewport).scrollbarWidth).toBe("none");
+  expect(getComputedStyle(slider).borderRadius).toBe("999px");
   style.remove();
 });
 

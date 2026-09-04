@@ -59,6 +59,11 @@
 
 .local-terminal-screen .xterm-viewport {
   background-color: transparent;
+  scrollbar-width: none;
+}
+
+.local-terminal-screen .scrollbar > .slider {
+  border-radius: 999px;
 }
 
 .local-terminal-resize {

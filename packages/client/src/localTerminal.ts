@@ -38,7 +38,6 @@ const TERMINAL_OPTIONS = {
     green: "#6CBE6C",
     magenta: "#C61C6F",
     red: "#D11C24",
-    scrollbarSliderBackground: "#001E2700",
     selectionBackground: "#003748",
     selectionForeground: "#7A8F8E",
     white: "#EAE3CB",
