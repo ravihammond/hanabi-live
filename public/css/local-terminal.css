@@ -7,7 +7,7 @@
   overflow: hidden;
   color: #c5d8d9;
   background: rgb(0 30 39 / 95%);
-  border: 1px solid #006488;
+  border: 1px solid #4a4a4a;
   border-radius: 6px;
   box-shadow: 0 8px 28px rgb(0 0 0 / 55%);
 }
@@ -25,7 +25,7 @@
   box-sizing: border-box;
   padding: 0 8px;
   color: #c5d8d9;
-  background: #002831;
+  background: #292929;
   cursor: move;
   user-select: none;
 }
@@ -43,6 +43,8 @@
 .local-terminal-header button {
   width: 24px;
   height: 22px;
+  background: #292929;
+  border-color: #4a4a4a;
 }
 
 .local-terminal-screen {

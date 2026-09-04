@@ -325,10 +325,12 @@ test("the terminal body is translucent without fading its chrome", () => {
 
   const panel = document.querySelector("#local-terminal-panel");
   const header = document.querySelector(".local-terminal-header");
+  const minimize = document.querySelector("#local-terminal-minimize");
   const screen = document.querySelector(".local-terminal-screen");
   if (
     !(panel instanceof HTMLElement)
     || !(header instanceof HTMLElement)
+    || !(minimize instanceof HTMLElement)
     || !(screen instanceof HTMLElement)
   ) {
     throw new TypeError("terminal surface did not mount");
@@ -348,9 +350,12 @@ test("the terminal body is translucent without fading its chrome", () => {
   xterm.append(viewport, scrollable);
   screen.append(xterm);
   expect(getComputedStyle(panel).backgroundColor).toBe("rgba(0, 30, 39, 0.95)");
+  expect(getComputedStyle(panel).borderColor).toBe("rgb(74, 74, 74)");
   expect(["", "1"]).toContain(getComputedStyle(panel).opacity);
-  expect(getComputedStyle(header).backgroundColor).toBe("rgb(0, 40, 49)");
+  expect(getComputedStyle(header).backgroundColor).toBe("rgb(41, 41, 41)");
   expect(getComputedStyle(header).color).toBe("rgb(197, 216, 217)");
+  expect(getComputedStyle(minimize).backgroundColor).toBe("rgb(41, 41, 41)");
+  expect(getComputedStyle(minimize).borderColor).toBe("rgb(74, 74, 74)");
   expect(getComputedStyle(screen).backgroundColor).toBe("rgba(0, 0, 0, 0)");
   expect(getComputedStyle(viewport).backgroundColor).toBe("rgba(0, 0, 0, 0)");
   expect(getComputedStyle(viewport).scrollbarWidth).toBe("none");
