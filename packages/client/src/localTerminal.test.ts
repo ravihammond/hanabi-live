@@ -1,6 +1,8 @@
+import { beforeEach, expect, jest, test } from "@jest/globals";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
-import { beforeEach, expect, jest, test } from "@jest/globals";
+import fs from "node:fs";
+import path from "node:path";
 import { TextEncoder as NodeTextEncoder } from "node:util";
 
 import {
@@ -271,11 +273,12 @@ test("the terminal uses the effective iTerm2 dark palette", () => {
   RecordingWebSocket.instances[0]?.dispatchEvent(new Event("open"));
 
   expect(mockTerminalConstructor).toHaveBeenCalledWith({
+    allowTransparency: true,
     drawBoldTextInBrightColors: true,
     fontFamily: '"Hack Nerd Font Mono", Hack, Menlo, monospace',
     fontSize: 12,
     theme: {
-      background: "#001E27",
+      background: "#001E2700",
       black: "#002831",
       blue: "#2176C7",
       brightBlack: "#006488",
@@ -299,6 +302,50 @@ test("the terminal uses the effective iTerm2 dark palette", () => {
       yellow: "#A57706",
     },
   });
+});
+
+test("the terminal body is translucent without fading its chrome", () => {
+  const style = document.createElement("style");
+  style.textContent = ["lib/xterm.css", "local-terminal.css"]
+    .map((file) =>
+      fs.readFileSync(
+        path.join(__dirname, "../../../public/css", file),
+        "utf8",
+      ),
+    )
+    .join("\n");
+  document.head.append(style);
+  window.name = JSON.stringify({
+    version: 1,
+    endpoint: "ws://127.0.0.1:43210/terminal/private",
+  });
+
+  initLocalTerminal();
+  RecordingWebSocket.instances[0]?.dispatchEvent(new Event("open"));
+
+  const panel = document.querySelector("#local-terminal-panel");
+  const header = document.querySelector(".local-terminal-header");
+  const screen = document.querySelector(".local-terminal-screen");
+  if (
+    !(panel instanceof HTMLElement)
+    || !(header instanceof HTMLElement)
+    || !(screen instanceof HTMLElement)
+  ) {
+    throw new TypeError("terminal surface did not mount");
+  }
+  const xterm = document.createElement("div");
+  const viewport = document.createElement("div");
+  xterm.className = "xterm";
+  viewport.className = "xterm-viewport";
+  xterm.append(viewport);
+  screen.append(xterm);
+  expect(getComputedStyle(panel).backgroundColor).toBe("rgba(0, 30, 39, 0.95)");
+  expect(["", "1"]).toContain(getComputedStyle(panel).opacity);
+  expect(getComputedStyle(header).backgroundColor).toBe("rgb(0, 40, 49)");
+  expect(getComputedStyle(header).color).toBe("rgb(197, 216, 217)");
+  expect(getComputedStyle(screen).backgroundColor).toBe("rgba(0, 0, 0, 0)");
+  expect(getComputedStyle(viewport).backgroundColor).toBe("rgba(0, 0, 0, 0)");
+  style.remove();
 });
 
 test("PTY bytes, fitted size, and post-replay input cross the socket", () => {

@@ -15,11 +15,12 @@ const RESIZE_DIRECTIONS = [
   "top-left",
 ] as const;
 const TERMINAL_OPTIONS = {
+  allowTransparency: true,
   drawBoldTextInBrightColors: true,
   fontFamily: '"Hack Nerd Font Mono", Hack, Menlo, monospace',
   fontSize: 12,
   theme: {
-    background: "#001E27",
+    background: "#001E2700",
     black: "#002831",
     blue: "#2176C7",
     brightBlack: "#006488",

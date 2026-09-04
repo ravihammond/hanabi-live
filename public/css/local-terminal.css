@@ -5,9 +5,8 @@
   flex-direction: column;
   box-sizing: border-box;
   overflow: hidden;
-  opacity: 0.95;
   color: #c5d8d9;
-  background: #001e27;
+  background: rgb(0 30 39 / 95%);
   border: 1px solid #006488;
   border-radius: 6px;
   box-shadow: 0 8px 28px rgb(0 0 0 / 55%);
@@ -51,11 +50,15 @@
   min-width: 0;
   min-height: 0;
   padding: 6px;
-  background: #001e27;
+  background: transparent;
 }
 
 .local-terminal-screen .xterm {
   height: 100%;
+}
+
+.local-terminal-screen .xterm-viewport {
+  background-color: transparent;
 }
 
 .local-terminal-resize {
